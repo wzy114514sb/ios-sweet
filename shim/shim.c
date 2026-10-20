@@ -11,6 +11,7 @@
 #include "mmu.h"
 #include "loader.h"
 #include "ufs.h"
+#include "panel.h"
 
 #define IMEM_RESTART_REASON	0x146aa65cUL	/* qcom,msm-imem restart_reason@65c */
 #define RESTART_BOOTLOADER	0x77665500U
@@ -379,6 +380,13 @@ void shim_main(uint64_t dtb)
 		for (unsigned long i = 0; i < (0x2400000UL / 4); i++)
 			p[i] = 0x00ff0000U;
 	}
+
+	/* no console yet: the panel is off, so record the display state instead */
+	panel_probe();
+#ifdef PERSEUS_PANEL_WAKE
+	panel_wake();
+#endif
+	ulog_flush();
 
 	struct mmu_info mi;
 
