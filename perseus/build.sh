@@ -3,36 +3,46 @@
 #
 #   perseus/build.sh                    # -> out/perseus-64m.img
 #   perseus/build.sh --no-pad           # keep the natural size
+#   KERNEL=/path/to/kernel.macho perseus/build.sh
 #
-# Inputs it expects next to the repo:
-#   research/ipsw-x/d22ap.adt   iPhone X /product node (optional; see README)
-#   dtb/boot_unpacked/dtb       stock perseus DTB (already in the tree)
-#
-# Everything else is generated: ADT, payload, shim, boot image.
+# Inputs:
+#   $KERNEL                    XNU mach-o (default out/kernel.macho)
+#   research/ipsw-x/d22ap.adt  iPhone X /product node (optional, see README)
+#   tools/mkbootimg            used when mkbootimg is not installed
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT=$PWD
 OUT=$ROOT/out
 mkdir -p "$OUT"
 
+KERNEL=${KERNEL:-$OUT/kernel.macho}
 DASIZE=${DRAM_SIZE:-0xfd400000}
 DABASE=${DRAM_BASE:-0x100000000}
 PAD=1
 [[ ${1:-} == --no-pad ]] && PAD=0
+
+MKB=$(command -v mkbootimg || true)
+if [[ -z $MKB ]]; then
+    MKB=$ROOT/tools/mkbootimg
+    chmod +x "$MKB"
+fi
+
+[[ -f $KERNEL ]] || { echo "no kernel at $KERNEL (set KERNEL=)" >&2; exit 1; }
 
 echo "== ADT =="
 python3 tools/mkadt-perseus.py "$OUT/perseus.adt" \
     --highmem --dram-base "$DABASE" --dram-size "$DASIZE"
 
 echo "== payload =="
-python3 tools/mkpayload.py out/kernel.macho "$OUT/perseus.adt" "$OUT/payload.bin" \
+python3 tools/mkpayload.py "$KERNEL" "$OUT/perseus.adt" "$OUT/payload.bin" \
     --cmdline "${CMDLINE:-debug=0xc serial=3 cpus=1 keepsyms=1 -v}"
 
 echo "== shim =="
-PATH=$HOME/bin:$PATH shim/build.sh "$OUT/payload.bin"
+CC=${CC:-aarch64-linux-gnu-gcc} OBJCOPY=${OBJCOPY:-aarch64-linux-gnu-objcopy} \
+    bash shim/build.sh "$OUT/payload.bin"
 
 echo "== image =="
-PATH=$HOME/bin:$PATH mkbootimg --header_version 1 \
+"$MKB" --header_version 1 \
     --kernel shim/out/Image --ramdisk "$OUT/payload.bin" \
     --base 0 --kernel_offset 0x8000 --ramdisk_offset 0x1000000 --tags_offset 0x100 \
     --pagesize 4096 --os_version 10.0.0 --os_patch_level 2020-12 \
