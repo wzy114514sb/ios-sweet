@@ -11,9 +11,12 @@
 #include "console.h"
 #include "fdt.h"
 #include "loader.h"
+#include "ufs.h"
 
 #define BOOT_LINE_LENGTH	608
 #define PAGE_16K		0x4000UL
+/* ABL loads the ramdisk at this physical address (boot header ramdisk_addr). */
+#define RAMDISK_FALLBACK	0x1000000UL
 
 struct payload_seg {
 	uint64_t vmaddr, vmsize, file_off, file_size;
@@ -78,16 +81,35 @@ typedef void (*xnu_entry_t)(uint64_t boot_args_pa);
 
 const char *loader_boot(uintptr_t dtb)
 {
-	uint64_t rd_start, rd_end;
+	uint64_t rd_start = 0, rd_end = 0;
+	int from_chosen = fdt_chosen_u64(dtb, "linux,initrd-start", &rd_start) &&
+	                  fdt_chosen_u64(dtb, "linux,initrd-end", &rd_end);
 
-	if (!fdt_chosen_u64(dtb, "linux,initrd-start", &rd_start) ||
-	    !fdt_chosen_u64(dtb, "linux,initrd-end", &rd_end))
-		return "no initrd in /chosen";
-	con_hex2("INITRD", "lo=", rd_start, "hi=", rd_end);
+	con_hex("DTB", dtb);
+	if (!from_chosen) {
+		con_str("INITRD", "absent in /chosen -> assume 0x1000000");
+		rd_start = RAMDISK_FALLBACK;
+	}
 
 	const struct payload *p = (const struct payload *)rd_start;
-	if (!magic_ok(p->magic))
+	if (!magic_ok(p->magic)) {
+		uint64_t m = 0;
+		for (int i = 0; i < 8; i++)
+			m = (m << 8) | (unsigned char)p->magic[i];
+		con_hex("MAGIC", m);
+		con_hex("AT", rd_start);
 		return "no SWEETXNU payload";
+	}
+	if (!from_chosen) {
+		uint64_t end = sizeof(struct payload);
+		for (uint32_t i = 0; i < p->nsegs; i++) {
+			uint64_t e = p->segs[i].file_off + p->segs[i].file_size;
+			if (e > end) end = e;
+		}
+		if (p->adt_off + p->adt_size > end) end = p->adt_off + p->adt_size;
+		rd_end = rd_start + ((end + 7) & ~7UL);
+	}
+	con_hex2("INITRD", "lo=", rd_start, "hi=", rd_end);
 	if (p->version != 1 || (p->adt_off & 7) || (rd_start & 7))
 		return "bad payload header";
 
@@ -141,6 +163,10 @@ const char *loader_boot(uintptr_t dtb)
 	con_str("XNU", "jumping (fbcon clears screen)");
 
 	/* Everything was written with the MMU and caches off; drop any stale I-cache lines too. */
+	ulog_hex("ENTRY_PA", entry_pa);
+	ulog_hex("BOOTARGS", ba_pa);
+	ulog("XNU", "jump");
+	ulog_flush();
 	__asm__ volatile("dsb sy; ic iallu; dsb sy; isb" ::: "memory");
 	((xnu_entry_t)entry_pa)(ba_pa);
 	return "xnu returned";

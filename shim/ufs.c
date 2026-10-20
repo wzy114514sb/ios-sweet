@@ -84,7 +84,7 @@ static uint32_t be32(const uint8_t *p)
  * Returns 0 on success, otherwise a code describing the failure stage.
  */
 static uint32_t scsi(uint8_t lun, const uint8_t *cdb, unsigned cdb_len, void *buf, uint32_t len,
-    uint32_t *ocs_out, uint32_t *status_out)
+    uint32_t *ocs_out, uint32_t *status_out, int dir)
 {
 	static uint8_t tag;
 	zero(&utrl[0], sizeof(utrl[0]));
@@ -92,7 +92,7 @@ static uint32_t scsi(uint8_t lun, const uint8_t *cdb, unsigned cdb_len, void *bu
 
 	/* Command UPIU: header (12 bytes), expected length, CDB. */
 	ucd.cmd[0] = 0x01;			/* transaction type: COMMAND */
-	ucd.cmd[1] = len ? 0x40 : 0x00;		/* flags: R (data in) */
+	ucd.cmd[1] = (len && dir == 0) ? 0x40 : 0x00;	/* flags: R only for data-in */
 	ucd.cmd[2] = lun;
 	ucd.cmd[3] = ++tag;
 	ucd.cmd[12] = len >> 24;
@@ -103,7 +103,7 @@ static uint32_t scsi(uint8_t lun, const uint8_t *cdb, unsigned cdb_len, void *bu
 		ucd.cmd[16 + i] = cdb[i];
 
 	uintptr_t ucd_pa = (uintptr_t)&ucd;
-	utrl[0].dw0 = (1u << 28) | ((len ? 2u : 0u) << 25) | (1u << 24);	/* UFS storage, dev->host */
+	utrl[0].dw0 = (1u << 28) | ((len ? (dir ? 1u : 2u) : 0u) << 25) | (1u << 24);	/* DD: 2 = dev->host, 1 = host->dev */
 	utrl[0].dw2 = 0x0f;			/* OCS: invalid until the host updates it */
 	utrl[0].ucdba = (uint32_t)ucd_pa;
 	utrl[0].ucdbau = (uint32_t)(ucd_pa >> 32);
@@ -139,7 +139,7 @@ static uint32_t read_blocks(uint32_t lba, uint32_t count, void *buf)
 {
 	uint8_t cdb[10] = { 0x28, 0, lba >> 24, lba >> 16, lba >> 8, lba, 0, count >> 8, count, 0 };
 	uint32_t ocs, st;
-	return scsi(0, cdb, sizeof(cdb), buf, count * BLOCK, &ocs, &st);
+	return scsi(0, cdb, sizeof(cdb), buf, count * BLOCK, &ocs, &st, 0);
 }
 
 static uint64_t le64(const uint8_t *p)
@@ -192,6 +192,118 @@ static void list_partitions(uint32_t entry_lba, uint32_t nent)
 	}
 }
 
+
+static uint32_t write_blocks(uint32_t lba, uint32_t count, const void *buf)
+{
+	uint8_t cdb[10] = { 0x2a, 0, lba >> 24, lba >> 16, lba >> 8, lba, 0, count >> 8, count, 0 };
+	uint32_t ocs, st;
+	return scsi(0, cdb, sizeof(cdb), (void *)buf, count * BLOCK, &ocs, &st, 1);
+}
+
+/* ---- debug log: RAM buffer, flushed to the tail of userdata ------------ */
+#define ULOG_MAX	8192u
+static char ulog_buf[ULOG_MAX] __attribute__((aligned(4096)));
+static unsigned ulog_len;
+
+static void ulog_ch(char c)
+{
+	if (ulog_len < ULOG_MAX - 1)
+		ulog_buf[ulog_len++] = c;
+}
+
+static void ulog_s(const char *s)
+{
+	while (*s)
+		ulog_ch(*s++);
+}
+
+void ulog(const char *label, const char *msg)
+{
+	ulog_s(label);
+	ulog_s(": ");
+	ulog_s(msg);
+	ulog_ch('\n');
+}
+
+void ulog_hex(const char *label, uint64_t v)
+{
+	static const char hex[] = "0123456789abcdef";
+	char tmp[20];
+	int n = 0;
+	ulog_s(label);
+	ulog_s(": 0x");
+	if (!v)
+		tmp[n++] = '0';
+	while (v) {
+		tmp[n++] = hex[v & 0xf];
+		v >>= 4;
+	}
+	while (n)
+		ulog_ch(tmp[--n]);
+	ulog_ch('\n');
+}
+
+static uint64_t le64v(const uint8_t *p)
+{
+	uint64_t v = 0;
+	for (int i = 7; i >= 0; i--)
+		v = v << 8 | p[i];
+	return v;
+}
+
+/* Write the log into the last 4 blocks of the "userdata" partition. */
+int ulog_flush(void)
+{
+	static uint8_t hdr[BLOCK] __attribute__((aligned(4096)));
+	static uint8_t ents[128 * 128] __attribute__((aligned(4096)));
+	uint32_t ocs, st;
+
+	if (read_blocks(1, 1, hdr))
+		return 1;
+	if (hdr[0] != 'E' || hdr[1] != 'F' || hdr[2] != 'I' || hdr[3] != ' ') {
+		ulog("FLUSH", "no GPT");
+		return 2;
+	}
+	uint64_t entry_lba = 2;
+	uint32_t nent = 128;
+	uint32_t blocks = (nent * 128 + BLOCK - 1) / BLOCK;
+	(void)ocs; (void)st;
+	if (read_blocks((uint32_t)entry_lba, blocks, ents))
+		return 3;
+
+	uint64_t first = 0, last = 0;
+	for (uint32_t i = 0; i < nent; i++) {
+		const uint8_t *e = ents + i * 128;
+		char name[17];
+		for (int c = 0; c < 16; c++) {
+			uint8_t ch = e[56 + 2 * c];
+			name[c] = (ch >= 32 && ch < 127) ? ch : (ch ? '?' : 0);
+		}
+		name[16] = 0;
+		if (!__builtin_strcmp(name, "userdata")) {
+			first = le64v(e + 32);
+			last = le64v(e + 40);
+			break;
+		}
+	}
+	if (!first) {
+		ulog("FLUSH", "no userdata partition");
+		return 4;
+	}
+
+	static char out[4 * BLOCK] __attribute__((aligned(4096)));
+	for (unsigned i = 0; i < sizeof(out); i++)
+		out[i] = 0;
+	const char *magic = "PERSLOG1\n";
+	for (int i = 0; magic[i]; i++)
+		out[i] = magic[i];
+	for (unsigned i = 0; i < ulog_len && 16 + i < sizeof(out); i++)
+		out[16 + i] = ulog_buf[i];
+	if (write_blocks((uint32_t)(last + 1 - 4), 4, out))
+		return 5;
+	return 0;
+}
+
 void test_ufs(void)
 {
 	con_str("UFS", "milestone 5 probe (read-only)");
@@ -232,21 +344,21 @@ void test_ufs(void)
 	static const uint8_t tur[6] = { 0x00 };
 	/* A first command may report a unit attention; retry a few times. */
 	for (int i = 0; i < 3; i++) {
-		rc = scsi(0, tur, sizeof(tur), 0, 0, &ocs, &st);
+		rc = scsi(0, tur, sizeof(tur), 0, 0, &ocs, &st, 0);
 		con_hex2("UFS TUR", "rc=", rc, "ocs/st=", ocs << 8 | st);
 		if (!rc)
 			break;
 	}
 
 	static const uint8_t cap10[10] = { 0x25 };	/* READ CAPACITY(10) */
-	rc = scsi(0, cap10, sizeof(cap10), data, 8, &ocs, &st);
+	rc = scsi(0, cap10, sizeof(cap10), data, 8, &ocs, &st, 0);
 	con_hex2("UFS CAP", "rc=", rc, "ocs/st=", ocs << 8 | st);
 	if (!rc)
 		con_hex2("UFS LUN0", "lastlba=", be32(data), "blk=", be32(data + 4));
 
 	/* READ(10) LBA 0, 2 blocks: protective MBR and the GPT header. */
 	static const uint8_t rd10[10] = { 0x28, 0, 0, 0, 0, 0, 0, 0, 2, 0 };
-	rc = scsi(0, rd10, sizeof(rd10), data, 2 * BLOCK, &ocs, &st);
+	rc = scsi(0, rd10, sizeof(rd10), data, 2 * BLOCK, &ocs, &st, 0);
 	con_hex2("UFS READ", "rc=", rc, "ocs/st=", ocs << 8 | st);
 	if (rc)
 		return;

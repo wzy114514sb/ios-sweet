@@ -118,7 +118,7 @@ static void __attribute__((noreturn)) reset(unsigned after_s)
 
 static void irq_handler(void)
 {
-	uint64_t iar = rsr("icc_iar1_el1");
+	uint64_t iar = rsr("S3_0_C12_C12_0");
 	uint32_t id = iar & 0xffffff;
 
 	if (id >= 1020 && id <= 1023)
@@ -132,7 +132,7 @@ static void irq_handler(void)
 		wsr("cntv_tval_el0", rsr("cntfrq_el0") / 100);	/* 10 ms */
 	else if (id == PTIMER_INTID)
 		wsr("cntp_tval_el0", rsr("cntfrq_el0") / 100);
-	wsr("icc_eoir1_el1", iar);
+	wsr("S3_0_C12_C12_1", iar);
 	isb();
 }
 
@@ -372,6 +372,14 @@ static uint32_t to_us(uint64_t ticks)
 
 void shim_main(uint64_t dtb)
 {
+	/* DIAG paint: fill the whole cont_splash_region (0x9d400000, 36 MiB) so
+	 * that whichever buffer ABL is scanning out shows up. */
+	{
+		volatile uint32_t *p = (volatile uint32_t *)0x9d400000UL;
+		for (unsigned long i = 0; i < (0x2400000UL / 4); i++)
+			p[i] = 0x00ff0000U;
+	}
+
 	struct mmu_info mi;
 
 	/* An xnu payload in the ramdisk means: boot it (MMU stays off). */
@@ -379,9 +387,15 @@ void shim_main(uint64_t dtb)
 	con_clear(RED);
 	con_str("SHIM", "sweet milestone 4: xnu loader");
 	con_skip();
+	ulog("ENTER", "shim_main");
+	ulog_hex("DTB", dtb);
 	const char *why = loader_boot(dtb);
+	ulog("LOADER", why);
+	ulog_flush();
 	con_str("LOADER", why);
-	con_skip();
+	con_str("HALT (no reset)", "power+volup to leave");
+	for (;;)
+		__asm__ volatile("wfe");
 
 	/* No payload: probe the internal UFS while the MMU is still off. */
 	stage = "ufs";
