@@ -17,6 +17,10 @@
 #define PAGE_16K		0x4000UL
 /* ABL loads the ramdisk at this physical address (boot header ramdisk_addr). */
 #define RAMDISK_FALLBACK	0x1000000UL
+/* where ABL loads the kernel section (boot header kernel_addr) */
+#define KERNEL_LOAD_ADDR	0x8000UL
+extern char _end[];
+extern volatile uintptr_t load_delta;
 
 struct payload_seg {
 	uint64_t vmaddr, vmsize, file_off, file_size;
@@ -92,6 +96,17 @@ const char *loader_boot(uintptr_t dtb)
 	}
 
 	const struct payload *p = (const struct payload *)rd_start;
+	/* topaz-style fallback: the payload may be appended to this image after
+	 * _end instead of living in the ABL ramdisk (Xiaomi ABLs drop ramdisks). */
+	if (!magic_ok(p->magic)) {
+		uintptr_t behind = (uintptr_t)_end + load_delta;
+		if (magic_ok(((const struct payload *)behind)->magic)) {
+			con_str("INITRD", "payload found behind _end");
+			rd_start = behind;
+			from_chosen = 0;
+			p = (const struct payload *)rd_start;
+		}
+	}
 	if (!magic_ok(p->magic)) {
 		uint64_t m = 0;
 		for (int i = 0; i < 8; i++)

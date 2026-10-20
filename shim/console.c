@@ -26,8 +26,21 @@ void con_clear(uint32_t bg)
 	row = 0;
 }
 
+#ifdef PERSEUS_QEMU
+/* qemu-system-aarch64 -M virt: PL011 at 0x09000000 */
+static void uart_putc(char c)
+{
+	*(volatile uint32_t *)0x09000000UL = (unsigned char)c;
+}
+#endif
+
 static void put_char(int col, char ch, uint32_t fg)
 {
+#ifdef PERSEUS_QEMU
+	uart_putc(ch);
+#endif
+#ifdef PERSEUS_QEMU
+#endif
 	if (ch < 0x20 || ch > 0x7e)
 		ch = '?';
 	const unsigned char *g = font8x16[ch - 0x20];

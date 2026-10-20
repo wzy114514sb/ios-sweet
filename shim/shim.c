@@ -371,6 +371,17 @@ static uint32_t to_us(uint64_t ticks)
 	return ticks * 10 / 192;	/* 19.2 MHz */
 }
 
+/* PSCI SYSTEM_RESET: architected, no magic register address, always present. */
+static void __attribute__((noreturn)) psci_system_reset(void)
+{
+	register long x0 __asm__("x0") = 0x84000009;
+	__asm__ volatile("smc #0" : "+r"(x0) :: "x1", "x2", "x3", "memory");
+	for (;;)
+		__asm__ volatile("wfe");
+}
+
+volatile uintptr_t load_delta;
+
 void shim_main(uint64_t dtb)
 {
 	/* DIAG paint: fill the whole cont_splash_region (0x9d400000, 36 MiB) so
@@ -381,12 +392,15 @@ void shim_main(uint64_t dtb)
 			p[i] = 0x00ff0000U;
 	}
 
-	/* no console yet: the panel is off, so record the display state instead */
+#ifndef PERSEUS_QEMU
+	/* no console yet: the panel is off, so record the display state instead.
+	 * Under QEMU neither the DSI nor the UFS controller exists. */
 	panel_probe();
 #ifdef PERSEUS_PANEL_WAKE
 	panel_wake();
 #endif
 	ulog_flush();
+#endif
 
 	struct mmu_info mi;
 
@@ -401,9 +415,9 @@ void shim_main(uint64_t dtb)
 	ulog("LOADER", why);
 	ulog_flush();
 	con_str("LOADER", why);
-	con_str("HALT (no reset)", "power+volup to leave");
-	for (;;)
-		__asm__ volatile("wfe");
+	con_str("HEARTBEAT", "reset in 20 s");
+	delay_ms(20000);
+	psci_system_reset();
 
 	/* No payload: probe the internal UFS while the MMU is still off. */
 	stage = "ufs";

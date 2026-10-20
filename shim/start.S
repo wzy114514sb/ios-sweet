@@ -19,6 +19,16 @@ _head:
 	.text
 	.globl _start
 _start:
+#ifdef PERSEUS_ENTRY_RESET
+	/* Two independent "did we run" signals, no display and no PSCI needed:
+	 * 1) reset the DWC3 controller -> the USB device disconnects (host sees it)
+	 * 2) PSCI SYSTEM_RESET -> the SoC restarts                        */
+	ldr	x0, =0x0a600000
+	ldr	w1, =0x40000000
+	str	w1, [x0, #0xc10]		/* DWC3 DCTL.CSFTRST */
+	ldr	x0, =0x84000009
+	smc	#0
+#endif
 	msr	daifset, #0xf
 	mov	x19, x0			/* DTB pointer from ABL */
 	msr	spsel, #1
