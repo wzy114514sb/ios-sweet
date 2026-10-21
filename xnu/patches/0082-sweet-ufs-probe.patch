@@ -1,0 +1,41 @@
+sweet: temporary UFS probe that dumps the partition's first block (bring-up only)
+
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -632,6 +632,36 @@
+ 	if (!error) {
+ 		error = ufs_find_partition(want);
+ 	}
++	if (!error) {
++		/*
++		 * TEMPORARY bring-up probe (patch 0082): show what the partition
++		 * actually holds.  hfs_mountfs returns EINVAL when the volume
++		 * header signature at offset 1024 is neither 'H+' nor 'HX', so dump
++		 * the first 16 bytes and that signature; the device's GPT header is
++		 * read as a control that block reads themselves still work.
++		 */
++		uint32_t probe_error = ufs_read_blocks(su.first_block, 1);
++		if (!probe_error) {
++			const uint8_t *b = (const uint8_t *)(su.dma + DMA_BOUNCE);
++			printf("SWEET UFS DBG: part 0x%llx+0x%llx blk0 "
++			    "%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x "
++			    "sig@1024=%02x%02x\n",
++			    su.first_block, su.nblocks,
++			    b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
++			    b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15],
++			    b[1024], b[1025]);
++		} else {
++			printf("SWEET UFS DBG: part block 0 read failed (%u)\n", probe_error);
++		}
++		probe_error = ufs_read_blocks(1, 1);
++		if (!probe_error) {
++			const uint8_t *b = (const uint8_t *)(su.dma + DMA_BOUNCE);
++			printf("SWEET UFS DBG: dev blk1 %02x%02x%02x%02x\n",
++			    b[0], b[1], b[2], b[3]);
++		} else {
++			printf("SWEET UFS DBG: dev block 1 read failed (%u)\n", probe_error);
++		}
++	}
+ 	lck_mtx_unlock(&sweet_ufs_lock);
+ 	if (error) {
+ 		return error;
