@@ -137,8 +137,12 @@ static void irq_handler(void)
 	isb();
 }
 
+static volatile int in_panic;
+
 void exc_handler(uint64_t slot, uint64_t *regs)
 {
+	int nested = in_panic;
+	in_panic = 1;
 	if (slot == 5) {	/* IRQ from current EL, SPx */
 		irq_handler();
 		return;
@@ -159,6 +163,18 @@ void exc_handler(uint64_t slot, uint64_t *regs)
 	con_hex("X0", regs[0]);
 	con_hex("X1", regs[1]);
 	con_hex("X30", regs[29]);	/* stashed lr is just above the frame */
+	if (!nested) {
+		/* leave the register state on disk: the screen is not visible */
+		ulog("PANIC", stage ? stage : "?");
+		ulog_hex("SLOT", slot);
+		ulog_hex("ESR", rsr("esr_el1"));
+		ulog_hex("ELR", rsr("elr_el1"));
+		ulog_hex("FAR", rsr("far_el1"));
+		ulog_hex("SPSR", rsr("spsr_el1"));
+		ulog_hex("X0", regs[0]);
+		ulog_hex("X30", regs[29]);
+		ulog_flush();
+	}
 	reset(40);
 }
 

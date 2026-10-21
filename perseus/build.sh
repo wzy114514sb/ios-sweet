@@ -1,25 +1,47 @@
 #!/bin/bash
-# Build the whole perseus boot chain in one shot.
+# Build the perseus boot image.
 #
-#   perseus/build.sh                    # -> out/perseus-64m.img
-#   perseus/build.sh --no-pad           # keep the natural size
-#   KERNEL=/path/to/kernel.macho perseus/build.sh
+# Only one packaging shape is accepted *and entered* by the perseus ABL
+# (all of this was measured on the phone, see perseus/HANDOFF.md):
+#
+#   kernel section = gzip(shim Image) followed by the stock perseus DTB blob
+#   ramdisk        = the mkpayload payload (kernel + ADT + boot-args)
+#   boot header v1, 2048-byte pages
+#   kernel / ramdisk / tags offsets 0x10000000
+#   NOT padded to the 64 MiB boot partition (a ~17 MB image boots)
+#
+# A raw, uncompressed shim is accepted by fastboot but never entered; padding
+# the image to the partition size is not needed either.
+#
+#   perseus/build.sh [OUT]
+#   KERNEL=out/kernel.macho CMDLINE='...' perseus/build.sh
 #
 # Inputs:
-#   $KERNEL                    XNU mach-o (default out/kernel.macho)
-#   research/ipsw-x/d22ap.adt  iPhone X /product node (optional, see README)
-#   tools/mkbootimg            used when mkbootimg is not installed
+#   $KERNEL                    XNU Mach-O (default out/kernel.macho)
+#   $CMDLINE                   kernel command line (default: the debug line
+#                              used for every bring-up boot so far)
+#   $DRAM_BASE/$DRAM_SIZE      ADT /chosen dram window (default: high bank)
+#   $ADT/$PAYLOAD              intermediate files (default out/)
+#   perseus/stock-dtb-blob.bin  stock DTB appended to the kernel section
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT=$PWD
-OUT=$ROOT/out
-mkdir -p "$OUT"
+OUTDIR=$ROOT/out
+mkdir -p "$OUTDIR"
 
-KERNEL=${KERNEL:-$OUT/kernel.macho}
-DASIZE=${DRAM_SIZE:-0xfd400000}
-DABASE=${DRAM_BASE:-0x100000000}
-PAD=1
-[[ ${1:-} == --no-pad ]] && PAD=0
+KERNEL=${KERNEL:-$OUTDIR/kernel.macho}
+ADT=${ADT:-$OUTDIR/perseus.adt}
+PAYLOAD=${PAYLOAD:-$OUTDIR/payload.bin}
+IMG=${1:-$OUTDIR/perseus.img}
+CMDLINE=${CMDLINE:-'debug=0x14e serial=3 cpus=1 keepsyms=1 -v -enable_kprintf_spam rd=ufsroot0'}
+DRAM_BASE=${DRAM_BASE:-0x100000000}
+DRAM_SIZE=${DRAM_SIZE:-0xfd400000}
+DTB=${DTB:-$ROOT/perseus/stock-dtb-blob.bin}
+PAGE=${PAGE:-2048}
+KERNEL_OFFSET=${KERNEL_OFFSET:-0x10000000}
+
+[[ -f $KERNEL ]] || { echo "no kernel at $KERNEL (set KERNEL=)" >&2; exit 1; }
+[[ -f $DTB ]] || { echo "no stock DTB at $DTB" >&2; exit 1; }
 
 MKB=$(command -v mkbootimg || true)
 if [[ -z $MKB ]]; then
@@ -27,37 +49,28 @@ if [[ -z $MKB ]]; then
     chmod +x "$MKB"
 fi
 
-[[ -f $KERNEL ]] || { echo "no kernel at $KERNEL (set KERNEL=)" >&2; exit 1; }
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
 
 echo "== ADT =="
-python3 tools/mkadt-perseus.py "$OUT/perseus.adt" \
-    --highmem --dram-base "$DABASE" --dram-size "$DASIZE"
+python3 tools/mkadt-perseus.py "$ADT" --highmem --dram-base "$DRAM_BASE" \
+    --dram-size "$DRAM_SIZE" --no-base
 
 echo "== payload =="
-python3 tools/mkpayload.py "$KERNEL" "$OUT/perseus.adt" "$OUT/payload.bin" \
-    --cmdline "${CMDLINE:-debug=0xc serial=3 cpus=1 keepsyms=1 -v}"
+python3 tools/mkpayload.py "$KERNEL" "$ADT" "$PAYLOAD" --cmdline "$CMDLINE"
 
 echo "== shim =="
-CC=${CC:-aarch64-linux-gnu-gcc} OBJCOPY=${OBJCOPY:-aarch64-linux-gnu-objcopy} \
-    bash shim/build.sh "$OUT/payload.bin"
+# The shim's own v2 boot.img is not used on perseus (the recipe below packs the
+# image), so do not require mkbootimg or the dtb/ dump inside shim/build.sh.
+SHIM_SKIP_PACK=1 CC=${CC:-aarch64-linux-gnu-gcc} \
+    OBJCOPY=${OBJCOPY:-aarch64-linux-gnu-objcopy} \
+    bash shim/build.sh "$PAYLOAD"
 
 echo "== image =="
-"$MKB" --header_version 1 \
-    --kernel shim/out/Image --ramdisk "$OUT/payload.bin" \
-    --base 0 --kernel_offset 0x8000 --ramdisk_offset 0x1000000 --tags_offset 0x100 \
-    --pagesize 4096 --os_version 10.0.0 --os_patch_level 2020-12 \
-    --cmdline "console=null" -o "$OUT/perseus.img"
-
-if [[ $PAD == 1 ]]; then
-    # perseus' ABL only accepts images that fill the boot partition (64 MiB).
-    python3 - "$OUT/perseus.img" "$OUT/perseus-64m.img" <<'PY'
-import sys
-src, dst = sys.argv[1], sys.argv[2]
-d = open(src, 'rb').read()
-open(dst, 'wb').write(d + bytes(67108864 - len(d)))
-print(f'{dst}: {67108864} bytes (padded from {len(d)})')
-PY
-    ls -l "$OUT/perseus-64m.img"
-else
-    ls -l "$OUT/perseus.img"
-fi
+gzip -9 -c shim/out/Image > "$TMP/shim.gz"
+cat "$TMP/shim.gz" "$DTB" > "$TMP/kernel-section"
+"$MKB" --header_version 1 --kernel "$TMP/kernel-section" --ramdisk "$PAYLOAD" \
+    --base 0 --kernel_offset "$KERNEL_OFFSET" --ramdisk_offset "$KERNEL_OFFSET" \
+    --tags_offset "$KERNEL_OFFSET" --pagesize "$PAGE" --os_version 17.0.0 \
+    --os_patch_level 2035-06 --cmdline "console=null" -o "$IMG"
+ls -l "$IMG"

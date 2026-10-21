@@ -54,6 +54,12 @@ QEMU_GICD, QEMU_GICR, QEMU_TIMEBASE, QEMU_VTIMER_INTID = 0x08000000, 0x080A0000,
 BOOT_MANIFEST_HASH = hashlib.sha384(b'perseus boot manifest').digest()
 SWEET_ECID = 0x5357454554000001     # synthetic; iPhone X userland does not check it
 
+# Nodes we rebuild from perseus hardware facts; everything else is kept from
+# the real iPhone X (D22AP) tree so the kernel sees a complete device tree.
+BASE_NODES = {'product', 'options', 'filesystems', 'osenvironments', 'aliases',
+              'pram', 'vram', 'buttons', 'dock', 'dock-0pin', 'baseband', 'sacm',
+              'defaults', 'backlight'}
+
 D22AP_ADT = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                          '..', 'research', 'ipsw-x', 'd22ap.adt')
 
@@ -132,7 +138,10 @@ def build(seed=None, qemu=False, highmem=False, dram_size=None, dram_base=None,
         cpu_nodes.append(node(f'cpu{core}', [
             ph(),
             ('device_type', cstr('cpu')),
-            ('compatible', cstr('qcom,kryo385') + cstr('ARM,v8')),
+            # SweetCPU (xnu/patches/0018) matches IONameMatch 'qcom,kryo470';
+            # IODTCompareNubName tries every compatible entry, so keep the
+            # real SDM845 name first and the driver's name second.
+            ('compatible', cstr('qcom,kryo385') + cstr('qcom,kryo470') + cstr('ARM,v8')),
             ('reg', u32(core << 8)),    # VERIFIED: Aff1 = 0x000..0x700 on perseus
             ('cpu-id', u32(core)),
             ('cluster-id', u32(1 if gold else 0)),
@@ -202,7 +211,7 @@ def build(seed=None, qemu=False, highmem=False, dram_size=None, dram_base=None,
 
     return node('device-tree', [
         ph(),
-        ('compatible', cstr('D22AP') + cstr('iPhone10,3') + cstr('xiaomi,perseus') + cstr('qcom,sdm845') + cstr('AppleARM')),
+        ('compatible', cstr('sweet') + cstr('D22AP') + cstr('iPhone10,3') + cstr('xiaomi,sweet') + cstr('qcom,sm7150') + cstr('AppleARM')),
         ('model', cstr('iPhone10,3')),
         ('target-type', cstr('D22')),
         ('target-sub-type', cstr('D22AP')),
@@ -222,6 +231,7 @@ def main():
     parser.add_argument('--dram-base', type=lambda v: int(v, 0), help='default 0x100000000')
     parser.add_argument('--dram-size', type=lambda v: int(v, 0), help='high bank size')
     parser.add_argument('--no-identity', action='store_true', help='omit /product')
+    parser.add_argument('--no-base', action='store_true', help='do not merge onto the D22AP tree')
     parser.add_argument('--names', choices=('sweet', 'perseus'), default='sweet',
                         help='node names the kernel looks up (default: sweet, matching the SWEET kernel)')
     parser.add_argument('--seed', type=lambda v: int(v, 0))
@@ -230,6 +240,15 @@ def main():
     root = build(seed=args.seed, qemu=args.qemu, highmem=args.highmem,
                  dram_size=args.dram_size, dram_base=args.dram_base,
                  dev_identity=not args.no_identity, names=args.names)
+    if not args.no_base and os.path.exists(D22AP_ADT):
+        base_root, _ = adt.parse(open(D22AP_ADT, 'rb').read())
+        kept = [c for c in base_root.children if c.name in BASE_NODES]
+        merged = kept + [c for c in root.children if c.name not in BASE_NODES]
+        base_root.children = merged
+        base_root.props = root.props          # perseus identity, not D22AP's own
+        root = base_root
+        print(f'merged onto D22AP base: kept {len(kept)}, rebuilt {len(merged)-len(kept)}', file=sys.stderr)
+
     blob = adt.serialize(root)
     with open(args.output, 'wb') as handle:
         handle.write(blob)

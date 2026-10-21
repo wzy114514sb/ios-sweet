@@ -26,11 +26,18 @@ if [ -n "${1:-}" ]; then
 else
 	(cd out && rm -rf rd && mkdir rd && cd rd && find . | cpio -o -H newc --quiet | gzip -9 > ../ramdisk.bin)
 fi
-mkbootimg --header_version 2 --kernel out/Image --ramdisk out/ramdisk.bin \
-	--dtb ../dtb/boot_unpacked/dtb --base 0 --kernel_offset 0x8000 --ramdisk_offset 0x1000000 \
-	--tags_offset 0x100 --dtb_offset 0x1f00000 --pagesize 4096 \
-	--os_version 17.0.0 --os_patch_level 2035-06 \
-	--cmdline "console=null" -o out/shim-boot.img
-# Host render of the console layout.
-gcc -O1 -Wall -o out/host_test console.c host_test.c && ./out/host_test
-ls -l out/Image out/shim-boot.img
+# The v2 image below is only a development convenience (it needs mkbootimg and
+# the dtb/ dump). perseus/build.sh packs the real perseus image and sets
+# SHIM_SKIP_PACK=1: all it needs from here is out/Image.
+if [ -z "${SHIM_SKIP_PACK:-}" ]; then
+	mkbootimg --header_version 2 --kernel out/Image --ramdisk out/ramdisk.bin \
+		--dtb ../dtb/boot_unpacked/dtb --base 0 --kernel_offset 0x8000 --ramdisk_offset 0x1000000 \
+		--tags_offset 0x100 --dtb_offset 0x1f00000 --pagesize 4096 \
+		--os_version 17.0.0 --os_patch_level 2035-06 \
+		--cmdline "console=null" -o out/shim-boot.img
+	# Host render of the console layout.
+	gcc -O1 -Wall -o out/host_test console.c host_test.c && ./out/host_test
+	ls -l out/Image out/shim-boot.img
+else
+	ls -l out/Image
+fi

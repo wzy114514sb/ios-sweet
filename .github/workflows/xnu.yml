@@ -131,7 +131,9 @@ jobs:
           if-no-files-found: warn
 
   bootimg:
-    # Packs the perseus boot image: ADT -> payload -> shim -> 64 MiB boot.img.
+    # Packs the perseus boot image the way the phone accepts it (see
+    # perseus/build.sh): ADT -> payload -> shim -> gzip(shim)+stock DTB as the
+    # kernel section, header v1 / 2048 / 0x10000000, not padded.
     needs: build
     if: ${{ success() && (inputs.bootimg != 'false') }}
     runs-on: ubuntu-latest
@@ -147,16 +149,16 @@ jobs:
       - name: Toolchain
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu cpio
+          sudo apt-get install -y -qq gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu cpio gawk
           aarch64-linux-gnu-gcc --version | head -1
 
       - name: Build boot image
         env:
           KERNEL: out/kernel.development.sweet
-        run: bash perseus/build.sh
+        run: bash perseus/build.sh out/perseus.img
 
       - uses: actions/upload-artifact@v4
         with:
           name: perseus-bootimg
-          path: out/perseus-64m.img
+          path: out/perseus.img
           retention-days: 14
