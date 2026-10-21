@@ -1,0 +1,30 @@
+diff --git a/iokit/Kernel/arm/SweetKeyStore.cpp b/iokit/Kernel/arm/SweetKeyStore.cpp
+index 58f43d6..8b5009a 100644
+--- a/iokit/Kernel/arm/SweetKeyStore.cpp
++++ b/iokit/Kernel/arm/SweetKeyStore.cpp
+@@ -214,7 +214,24 @@ AppleKeyStoreUserClient::externalMethod(uint32_t selector, IOExternalMethodArgum
+ 		ret = sweet_aks_device_state(args);
+ 		break;
+ 	default:
+-		ret = kIOReturnUnsupported;
++		/*
++		 * Bring-up mode: answer unknown selectors with success and a zeroed
++		 * output instead of kIOReturnUnsupported.  During the first boot the
++		 * migration service asks for selectors we cannot implement without the
++		 * SEP (34 and 93 here); with a hard failure it stops making progress
++		 * and backboardd then waits for it forever.
++		 */
++		if (args->scalarOutputCount > 0 && args->scalarOutput != NULL) {
++			for (uint32_t i = 0; i < args->scalarOutputCount; i++) {
++				args->scalarOutput[i] = 0;
++			}
++		} else {
++			args->scalarOutputCount = 0;
++		}
++		if (args->structureOutput != NULL && args->structureOutputSize > 0) {
++			memset(args->structureOutput, 0, args->structureOutputSize);
++		}
++		ret = kIOReturnSuccess;
+ 		break;
+ 	}
+ 
