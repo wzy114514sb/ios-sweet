@@ -1,135 +1,146 @@
 # perseus (Xiaomi MIX 3, SDM845) — iOS 16 userland bring-up: handoff
 
-Read this first. Everything below is either OBSERVED on hardware or on the
-QEMU reproducer. Do not re-derive rejected hypotheses.
+Read this first. Everything below is OBSERVED on hardware (2026-10-21). Do not
+re-derive the rejected hypotheses.
 
-## TL;DR (2026-10-21)
+## TL;DR
 
-The kernel boot chain works and XNU runs, but until now the boot died silently
-in the IOKit phase: after `SWEET FB: AppleCLCD ...` the machine went idle with
-no panic and no further console output. That was **not** the UFS driver and
-**not** the console being stolen: the ADT's boot CPU node carried
-`compatible = "qcom,kryo385"`, while the SweetCPU driver (patch 0018) matches
-`IONameMatch = "qcom,kryo470"`. The CPU driver never matched, the CPUs were
-never registered, and the boot thread sat waiting for them.
-`tools/mkadt-perseus.py` now emits `qcom,kryo385` + `qcom,kryo470` (IODTMatch
-walks every NUL-separated `compatible` entry), so the boot gets past IOKit and
-reaches `IOFindBSDRoot` / the UFS root device. Next step is the UFS probe, not
-the console.
+The port now boots iOS 16 userland on the phone: launchd runs as PID 1, the
+whole core daemon set starts once and does not crash, userland draws through
+our display path (verified with real IOSurface swaps), and the first-boot data
+migration completes with the on-screen progress UI.
 
-## The QEMU reproducer (use this before touching the phone)
+The current blocker is the last step to a UI: **SpringBoard's main thread is
+blocked in a synchronous XPC call** (`libsystem_kernel: mach_msg2_trap ->
+libdispatch -> libxpc -> Foundation -> CoreServices`) and nothing paints after
+the migration bar finishes. `usermanagerd` does create the default session
+(uid 501 / mobile), so this is not the session itself; see "Open questions".
 
-The stall reproduces with the stock CI kernel and the perseus ADT, so a phone
-boot is not needed for this class of bug:
+## What works (observed on the phone)
 
-    cd ~/ios-sweet
-    export PATH=$HOME/ios/qemu-8.2.2/build/aarch64-softmmu:$PATH
-    python3 tools/mkadt-perseus.py /tmp/q.adt --qemu --no-base
-    python3 tools/mkpayload.py ~/port/kernel.macho /tmp/q.adt /tmp/q.bin \
-        --cmdline 'debug=0x14e serial=3 cpus=1 keepsyms=1 -v -enable_kprintf_spam rd=ufsroot0'
-    python3 tools/qemu-sweet.py /tmp/q.bin /tmp/qout --secs 60 \
-        --kernel ~/port/kernel.macho
-
-`qemu-sweet.py` dumps `FB_BASE = 0x9c000000 / 1080x2400` by default; for the
-perseus ADT patch those constants to `0x9d400000 / 1080x2340` (one `sed`) or the
-late console text is decoded from the wrong address.
-
-Measured A/B, same kernel, same cmdline, only the ADT differs:
-
-| CPU `compatible` | result |
+| layer | evidence |
 | --- | --- |
-| `qcom,kryo385` | stops after `SWEET FB: AppleCLCD`, no panic, CPU idle (`PC=_ml_get_timebase`, `LR=_processor_idle`) |
-| `qcom,kryo385` + `qcom,kryo470` | `SWEET CPU: 1/1 CPUs initialized, SGI1 verified`, `bsd_autoconf: calling kminit`, skywalk self-tests, `ifnet_attach`, then `IOFindBSDRoot` (and the expected panic in QEMU because it has no `/sweet-ufs` hardware) |
+| boot chain | `perseus/build.sh` recipe (gzip(shim)+stock DTB, v1, 2048, offsets 0x10000000) |
+| CPU driver | ADT CPU node must list `qcom,kryo470` (SweetCPU's IONameMatch) |
+| UFS | host takeover works; boot args need `ufsrw=1` or the device is read-only |
+| HFS+ root | mounts read-write with `rootrw=1`; `hfs: mounted iOSRoot on device b(1, 0)` |
+| launchd | PID 1, early boot tasks, `launchd_cache_loader` passes with patch 0083 |
+| daemons | runningboardd/backboardd/SpringBoard/securityd/keybagd/watchdogd/notifyd/configd/logd/... all exec=1 crash=0 |
+| display | `IOK backboardd: open AppleCLCD type 0 -> 0x0`, `SWEET SURF: backboardd create id 3 1125x2436`, `SWEET FB: swap 2 layer 0 surface 2 1125x2436 fmt 0x42475241` |
+| input | `SWEET KEYS: key=0 down=1` -> `SWEET HID: key 0x30 down (1 clients)` (SpringBoard listens) |
+| migration | progress UI drawn by backboardd, bar reaches 100%, datamigrator + migrationpluginwrapper ran |
 
-Note the screen console is a **circular** log (`fbcon_newline` wraps to row 0
-and clears the two rows below the cursor), so the newest line is the one
-followed by blank rows, not the bottom-most line of the screen. Reading the
-bottom of the screen as "the end of the log" is how the previous handoff
-concluded the boot stopped at `debug_log_init`; it did not.
+Boot args of the working image:
 
-## The one packaging recipe that works (OBSERVED)
+    debug=0x14e serial=3 cpus=1 keepsyms=1 -v -enable_kprintf_spam \
+    ufsrw=1 rootrw=1 unentitled_ios_sim_launch=1 rd=ufsroot0
 
-Now scripted: `perseus/build.sh` (formerly a manual sequence).
+## Root image recipe (this is the one that is stable)
 
-    kernel section = gzip(shim Image) followed by the stock DTB blob
-                     (1,237,374 B from boot-stock.img, offset 0xd947cd..0xec294b)
-    ramdisk        = the mkpayload payload (kernel + ADT + boot-args)
-    header         = v1, page_size 2048
-    offsets        = kernel 0x10000000, ramdisk 0x10000000, tags 0x10000000
-    size           = do NOT pad to the 64 MiB partition; 17 MB boots
+`tools/mkiosroot.sh` as usual, but the volume is created with preallocated
+metadata so the btrees never grow and never fragment:
 
-    KERNEL=out/kernel.macho perseus/build.sh out/perseus.img
+    mkfs.hfsplus -s -J -v iOSRoot -c c=49152,e=8192,b=512 "$out"
 
-The default cmdline is
-`debug=0x14e serial=3 cpus=1 keepsyms=1 -v -enable_kprintf_spam rd=ufsroot0`.
+(catalog 192 MiB, extents 32 MiB, bitmap 2 MiB, each a single extent.) The
+default 4 MiB catalog grew to 154 MiB in 8 extents on the first image, which
+caused two separate failures:
 
-## ADT requirements (OBSERVED)
+1. `hfs_swap_BTNode: offsets ... out of order` + `Runtime corruption detected`
+   whenever a btree node (8192 B = 2 allocation blocks) straddled an extent
+   boundary: the kernel reads the node's second block from the physically next
+   block instead of the block the extent maps, e.g. file block 17923 mapped to
+   216063 (`extent6.start + 3`) instead of 216075 (`extent7.start`).
+2. `hfs: extendbtree: fcb ... has eof ... not a multiple of 0x2000` panic when
+   userland first created files and the catalog had to grow (it had 24 free
+   nodes). Preallocating removes both.
 
-- compatible[0] MUST be `sweet`, otherwise
-  `Unable to find driver for this platform: D22AP` @IOPlatformExpert.cpp:2319.
-- **The boot CPU node must carry `qcom,kryo470`** (the SweetCPU
-  `IONameMatch`), in addition to the real `qcom,kryo385`.
-- Generator: `tools/mkadt-perseus.py --highmem --dram-base 0x100000000
-  --dram-size 0xfd400000 --no-base` (small hand-built tree). Merging the whole
-  D22AP tree (`--base`) makes XNU trip over Apple's absolute pointers
-  (`Device tree pointer outside of device tree region`) and hang even earlier:
-  rejected.
-- `/sweet-ufs` = compatible `qcom,ufshc` + reg 0x1d84000/0x2500.
-- `/sweet-fbcon` = 0x9d400000/0x2400000, 1080x2340, stride 4320 -> works.
-- The early console (`xnu/patches/0010`, `sweet_early.c`) still hardcodes
-  sweet's framebuffer 0x9c000000, which on perseus is plain RAM outside XNU's
-  DRAM window: harmless but invisible. Cosmetic until someone needs it.
+The volume also gets `/private/var/keybags/systembag.kb` (plain plist) from the
+generator; there is no `persona.kb` and no `containers/` yet.
 
-## Rejected hypotheses (do not retry)
+## Reading the console after a boot (no phone screen needed)
 
-- "ABL powers the panel off without a splash_region node": false for perseus.
-- "Image must be padded to 64 MiB": false.
-- "Kernel must be raw Image": false; it must be gzip. A raw shim is accepted
-  by fastboot ("Booting OKAY") but never entered.
-- "UFS PHY/clock port needed": the driver does no PHY init; it reuses the host
-  state ABL left (same approach as the shim's UFS code).
-- "The console is taken over by the IOKit progress console": false. The
-  screen simply wraps; see above.
-- Full D22AP ADT merge (`mkadt-perseus.py` without `--no-base`): rejected.
+Kernel patch 0047 mirrors the whole console into a 4 MiB ring and flushes it to
+the last 4100 KiB of userdata every second. Pull it from TWRP:
 
-## Next actions (in order)
+    fastboot boot TWRP-3.7.1-A14-non-Dynamic.img
+    # adb shows state "recovery"
+    adb shell 'blockdev --getsize64 /dev/block/by-name/userdata'   # 106886594560
+    # skip = size/4096 - 1025
+    cmd /c "adb exec-out \"dd if=/dev/block/by-name/userdata bs=4096 \
+        skip=26094335 count=1025 2>/dev/null\" > perslog.bin"
+    python tools/sweet-log.py perslog.bin perslog.txt
 
-1. Boot `out/perseus.img` with the fixed ADT (`fastboot boot`) and confirm the
-   `SWEET CPU:` lines plus `SWEET UFS:` on screen. If `SWEET UFS:` reports
-   `host not ready`, capture the values and port the SM7150 -> SDM845
-   clock/PHY differences (see perseus/UFS-PORTING.md).
-2. Only if the UFS read path works: GPT, `rd=ufsroot0` root mount, dyld.
-3. Kernel changes need CI: push to the `perseus` branch (see below).
+`perslog.txt` is the full kernel console of the session (659 KB for a ~1 h
+boot). Note that the fbcon is a *circular* screen log: the newest line is the
+one followed by blank rows, not the bottom-most line.
 
-## CI
+## Symbolicating the sampler output
 
-The macOS `build` job works on the fork `wzy114514sb/ios-sweet` (about 7 min);
-the `bootimg` job now runs `perseus/build.sh` and uploads `out/perseus.img`.
-Push to the fork's `perseus` branch (the upstream `dipa-studio/ios-sweet` only
-grants pull to this account).
+Kernel patch 0054 samples `backboardd`/`SpringBoard` threads and prints raw
+addresses (`SMP <proc>[pid] tN pc ... bt ...`). They can be resolved offline
+against the dyld shared cache in the image:
 
-## Artifacts
+* parse `/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64`
+  (image list = 32-byte entries: u64 address, u64 mtime, u64 inode, u32 path
+  offset, u32 pad; 2031 images in this build),
+* unslide with the `slide` value the crash printer reports (0x27130000 here),
+* map each address to `path + offset`.
 
-- Kernel:  perseus-port/ci/kernel2/kernel.development.sweet (sha256 4c3c04a3..)
-- Root:    D:\MI845\IOS16-perseus\ios16-root.simg (12.1 GB)
-           already flashed to userdata
-- Working images (fastboot boot, nothing is flashed):
-  perseus-k470.img  -> reaches the UFS probe (this handoff)
-  perseus-spam.img  -> old ADT: stops after AppleCLCD
-- Sources: ~/ios-sweet (branch perseus, fork wzy114514sb/ios-sweet)
-           perseus/UFS-PORTING.md (kept for the UFS port proper)
-- xnu reference source (tag xnu-8796.141.3) is in ~/xnu-8796 on the VM.
+`work/symbolize.py` + `work/dsc_images.json` in the workspace do exactly that.
+What it shows for the current stall:
 
-## Environment (VM 192.168.52.129, user wzy)
-- ~/miniconda/bin/python 3.14, iasl/nasm/clang/llvm/mono installed
-- ~/bin/mkbootimg (own tool, also committed as tools/mkbootimg for CI)
-- QEMU 8.2.2 at ~/ios/qemu-8.2.2/build/aarch64-softmmu (the distro QEMU 4.2
-  has no cortex-a76 model; qemu-sweet.py needs it)
+* SpringBoard t0: `mach_msg2_trap -> libdispatch -> libxpc -> Foundation ->
+  CoreServices` (a synchronous XPC send with reply), t1: FrontBoard loop,
+  the rest idle.
+* backboardd: many threads in `mach_msg2_trap`, several in QuartzCore
+  (compositor running), i.e. healthy.
+
+## Open questions / next actions
+
+1. **Which XPC is SpringBoard waiting for?** The stack is a synchronous
+   Foundation/xpc call. Candidates: the shell check-in it performs against
+   backboardd, or a FrontBoard/runningboardd service. Next step is to make the
+   kernel print the blocked message's `msgh_id` (or the port name) for
+   SpringBoard instead of raw addresses, then compare with the same boot on a
+   tolerant boot-arg set.
+2. **AKS selectors the migration still needs**: `com.apple.datamigrator`
+   calls selector 93 (arg 0xffffffffffffffff) and 34, both answered
+   `0xe00002c7` (kIOReturnUnsupported). Implementing them may unblock the
+   migration's last stages.
+3. **Personas**: `usermanagerd` created the default session, but
+   `/private/var/keybags/persona.kb` and `containers/` do not exist and
+   persona creation needs AKS key wrapping (no SEP). Either pre-bake persona
+   data into the image or patch the consumers.
+4. **Noise to ignore for now**: `fairplayd.H2`, `bluetoothd`, `driverkitd`,
+   `SiriTTSSynthesizerAU`, `MacinTalkAUSP`, `KonaSynthesizer` crash-loop
+   (SIGABRT / jetsam) because audio HAL, DriverKit services and the GPU
+   (`IOAcceleratorES`) do not exist. None of them is on the boot path.
+
+## Kernel changes added on top of the original series
+
+* 0082 (temporary): dump the UFS root partition's first block, the volume
+  header fields and the catalog btree header to the console.
+* 0083: publish a built-in `AppleMobileFileIntegrity` IOService + user client.
+  `launchd_cache_loader` does `IOServiceGetMatchingService(
+  IOServiceMatching("AppleMobileFileIntegrity"))`, opens a user client and
+  calls selector 6 with `{1}` scalar + the cdhash; success means "trusted".
+  Without the service it aborts and, being a PID 1 child, panics the machine.
+
+## Environment
+
+* VM 192.168.52.129 (user wzy, ssh key installed from the Windows host).
+* QEMU 8.2.2 at ~/ios/qemu-8.2.2/build/aarch64-softmmu (the distro QEMU 4.2
+  has no cortex-a76 model).
+* xnu-8796.141.3 source in ~/xnu-8796; Apple hfs source in ~/hfs-627.
+* CI: push to the fork `wzy114514sb/ios-sweet` branch `perseus` runs `xnu.yml`
+  (macOS build ~7 min, plus the boot image job). Upstream
+  `dipa-studio/ios-sweet` grants pull only.
 
 ## Facts about the device (from stock DTB and live DT)
 
 RAM 0x80000000+0xC0000000 and 0x140000000+0xBD4A0000
 XNU window used by the ADT: 0x100000000 + 0xfd400000 (no carve-outs)
+userdata partition: /dev/block/sda23, 106,886,594,560 B (26,095,360 x 4096)
 splash 0x9D400000+0x2400000 | GIC 0x17A00000/0x17A60000 INTID 19
 UFS 0x1D84000 | panel 1080x2340 Samsung EA8076 | touch FT5x46 @ i2c 0x38
-boot.img stock: v1, page 4096, kernel 0x8000, ramdisk 0x1000000, tags 0x100
