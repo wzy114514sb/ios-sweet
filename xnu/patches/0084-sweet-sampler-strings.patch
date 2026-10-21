@@ -1,0 +1,54 @@
+diff --git a/osfmk/kern/exception.c b/osfmk/kern/exception.c
+index a20a764..7423e03 100644
+--- a/osfmk/kern/exception.c
++++ b/osfmk/kern/exception.c
+@@ -994,6 +994,41 @@ sweet_crash_strings(const char *name)
+  * SWEET process sampler (bsd/dev/sweet_sample.c): user pc/lr/sp and a frame
+  * pointer backtrace of every thread of a task, from the saved user state.
+  */
++/*
++ * SWEET: print the printable strings in the first 256 bytes of a thread's
++ * user stack.  A thread blocked in a mach_msg/XPC call keeps the outgoing
++ * message, or its reply state, there, and XPC payloads carry the service
++ * name, so this names what a hung process is waiting for.
++ */
++static void
++sweet_sample_strings(const char *name, int tid, vm_map_t map, uint64_t sp)
++{
++	uint8_t stack[256];
++	char line[512];
++	int n;
++	bool added = false;
++
++	if (sp == 0 || vm_map_read_user(map, sp, stack, sizeof(stack)) != KERN_SUCCESS) {
++		return;
++	}
++	n = snprintf(line, sizeof(line), "SMP %s t%d str", name, tid);
++	for (unsigned int i = 0; i < sizeof(stack) && n < (int)sizeof(line) - 96;) {
++		unsigned int j = i;
++		while (j < sizeof(stack) && stack[j] >= 0x20 && stack[j] < 0x7f) {
++			j++;
++		}
++		if (j - i >= 6) {
++			n += snprintf(line + n, sizeof(line) - n, " %.*s", (int)(j - i),
++			    (const char *)stack + i);
++			added = true;
++		}
++		i = (j == i) ? i + 1 : j;
++	}
++	if (added) {
++		printf("%s\n", line);
++	}
++}
++
+ void sweet_sample_task(const char *name, int pid, task_t task);
+ 
+ void
+@@ -1036,6 +1071,7 @@ sweet_sample_task(const char *name, int pid, task_t task)
+ 			fp = frame[0];
+ 		}
+ 		printf("%s\n", line);
++		sweet_sample_strings(name, tn - 1, map, get_saved_state_sp(ss));
+ 	}
+ 	task_unlock(task);
+ }

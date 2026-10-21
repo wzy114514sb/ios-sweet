@@ -33,7 +33,7 @@ KERNEL=${KERNEL:-$OUTDIR/kernel.macho}
 ADT=${ADT:-$OUTDIR/perseus.adt}
 PAYLOAD=${PAYLOAD:-$OUTDIR/payload.bin}
 IMG=${1:-$OUTDIR/perseus.img}
-CMDLINE=${CMDLINE:-'debug=0x14e serial=3 cpus=1 keepsyms=1 -v -enable_kprintf_spam ufsrw=1 rootrw=1 unentitled_ios_sim_launch=1 rd=ufsroot0'}
+CMDLINE=${CMDLINE:-'debug=0x14e serial=3 cpus=1 keepsyms=1 -v -enable_kprintf_spam ufsrw=1 rootrw=1 unentitled_ios_sim_launch=1 sweetfb_noconsole=1 rd=ufsroot0'}
 DRAM_BASE=${DRAM_BASE:-0x100000000}
 DRAM_SIZE=${DRAM_SIZE:-0xfd400000}
 DTB=${DTB:-$ROOT/perseus/stock-dtb-blob.bin}
