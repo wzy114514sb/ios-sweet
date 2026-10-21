@@ -144,3 +144,68 @@ XNU window used by the ADT: 0x100000000 + 0xfd400000 (no carve-outs)
 userdata partition: /dev/block/sda23, 106,886,594,560 B (26,095,360 x 4096)
 splash 0x9D400000+0x2400000 | GIC 0x17A00000/0x17A60000 INTID 19
 UFS 0x1D84000 | panel 1080x2340 Samsung EA8076 | touch FT5x46 @ i2c 0x38
+
+## Latest findings (second session, after the first userland boots)
+
+### SMP works on perseus
+
+Booted with `cpus=8`: the ADT already declares eight CPU nodes, and the kernel's
+PSCI path brings the secondaries up on real hardware:
+
+    SWEET CPU: requested=8 selected=8 (limit=8)
+    SWEET CPU: cpu=1 CPU_ON target=0x100 entry_pa=0x10148e000 context=1
+    SWEET CPU: cpu=1 PSCI CPU_ON rc=0
+    SWEET CPU: cpu=1 mpidr=0x100 came alive; SGI1 OK     (cpu 2..7 likewise)
+
+So the single-core limit was only the `cpus=1` boot arg, not a missing driver.
+
+### Where the UI actually stops (symbolicated, 40 samples each)
+
+SpringBoard t0 (all 40 samples identical):
+
+    libsystem_kernel(mach_msg2) -> libdispatch -> libxpc
+    -> BoardServices.framework + 0x3128/+0x5e78/+0x5554
+
+i.e. the BoardServices (BKS) system-shell check-in. backboardd never answers
+it because its own worker sits in:
+
+    libsystem_kernel(mach_msg2) -> libdispatch -> libxpc
+    -> DataMigration.framework + 0x5334          (backboardd t1)
+
+That is `DMPerformMigrationIfNeeded`: backboardd waits for the data-migration
+service, and until it returns it keeps SpringBoard's shell check-in pending.
+The boot progress UI reaches 100% and then holds forever.
+
+### The migration service is the suspect
+
+`com.apple.datamigrator` is exec'd, calls AKS selectors 0, 101, 93, 34, 17 and
+then goes silent; 93 (arg 0xffffffffffffffff) and 34 both return
+kIOReturnUnsupported (0xe00002c7) from our AKS stub. `migrationpluginwrapper`
+runs 2-3 times.
+
+Two image problems found while looking for it:
+
+* there is no `datamigrator` / `migrationpluginwrapper` binary under
+  `/usr/libexec` (282 entries, none matching) nor anywhere else in the volume,
+  and no `com.apple.datamigrator.plist`, yet a process of that name ran;
+* the App cryptex copy is only 11 MiB (three metadata files) and the OS cryptex
+  has no `usr/libexec` at all, so the image is probably an incomplete copy of
+  the source DMGs.
+
+Next actions, in order:
+
+1. Compare the built image against the three source DMGs (file count and size
+   per top-level directory) and re-copy whatever `mkiosroot.sh` dropped. The
+   missing App cryptex content is the most likely reason the migration never
+   finishes.
+2. Make the AKS stub answer the unimplemented selectors (34, 93, ...) with
+   success plus zeroed output instead of kIOReturnUnsupported, so the migration
+   can proceed even without the SEP-backed calls.
+3. If the migration still does not finish, pre-bake the migration state the
+   service expects under `/private/var/datamigrator` (it exists but is empty on
+   our image).
+
+### Sampler gotcha
+
+XNU process names are 16 characters (`MAXCOMLEN`), so `sweetsample=` must use
+the truncated names: `com.apple.datami`, not `com.apple.datamigrator`.
