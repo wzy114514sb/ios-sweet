@@ -1,0 +1,54 @@
+diff --git a/bsd/kern/sweet_amfi.c b/bsd/kern/sweet_amfi.c
+index cb67b4d..6aaf7d9 100644
+--- a/bsd/kern/sweet_amfi.c
++++ b/bsd/kern/sweet_amfi.c
+@@ -305,8 +305,49 @@ sweet_sandbox_syscall(struct proc *p, int call, __unused user_addr_t arg)
+ 	}
+ }
+ 
++/*
++ * dyld asks AMFI (through __mac_syscall request 0x5a, "check dyld policy") what it
++ * may do for the process it is starting: whether the DYLD_* variables, @paths,
++ * inserted libraries and interposing are allowed.  With no handler the question
++ * failed and dyld refused DYLD_INSERT_LIBRARIES, which is how the window server
++ * was supposed to get its software OpenGL ES (libredwood-gl.dylib) inside it.
++ *
++ * Nothing is enforced by this kernel, so the answer is "all of it"
++ * (AMFI_DYLD_OUTPUT_ALLOW_ALL).  Request 0x60 ("query boot-arg state") reports
++ * the three AMFI-disable boot arguments as set, which is the same statement.
++ */
++#define SWEET_AMFI_SYSCALL_CHECK_DYLD_POLICY     0x5a
++#define SWEET_AMFI_SYSCALL_QUERY_BOOTARG_STATE    0x60
++#define SWEET_AMFI_DYLD_OUTPUT_ALLOW_ALL         0xffULL
++#define SWEET_AMFI_BOOTARG_STATE_NOT_ENFORCING   0x86ULL
++
++static int
++sweet_amfi_policy_syscall(__unused struct proc *p, int call, user_addr_t arg)
++{
++	struct {
++		uint64_t input_flags;
++		user_addr_t output_flags;
++	} args;
++	uint64_t flags = SWEET_AMFI_DYLD_OUTPUT_ALLOW_ALL;
++	uint64_t state = SWEET_AMFI_BOOTARG_STATE_NOT_ENFORCING;
++	int error;
++
++	if (call == SWEET_AMFI_SYSCALL_QUERY_BOOTARG_STATE) {
++		return copyout(&state, arg, sizeof(state));
++	}
++	if (call != SWEET_AMFI_SYSCALL_CHECK_DYLD_POLICY) {
++		return ENOPOLICY;
++	}
++	error = copyin(arg, &args, sizeof(args));
++	if (error == 0) {
++		error = copyout(&flags, args.output_flags, sizeof(flags));
++	}
++	return error;
++}
++
+ static const struct mac_policy_ops sweet_amfi_mac_ops = {
+ 	.mpo_vnode_check_signature = sweet_amfi_vnode_check_signature,
++	.mpo_policy_syscall = sweet_amfi_policy_syscall,
+ };
+ 
+ /*

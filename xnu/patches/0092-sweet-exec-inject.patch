@@ -1,0 +1,119 @@
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+index 68612db..7590edc 100644
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -5569,6 +5569,89 @@ bad:
+  *		to arrays of user space pointers.
+  */
+ __attribute__((noinline))
++/*
++ * SWEET: launchd refuses to pass DYLD_* variables from a job description, so the
++ * kernel adds this one itself: a program whose file name matches gets
++ * DYLD_INSERT_LIBRARIES in its environment and dyld then loads the library into
++ * it.  That is how the window server gets its software OpenGL ES
++ * (libredwood-gl.dylib) inside it.
++ *
++ * The boot argument "sweetinject=LIBRARY:NAME:NAME" names the library and the
++ * programs ("sweetinject" may be repeated).  Matching is on the file name of the
++ * program being executed, as exec sees it.
++ */
++#define SWEET_INJECT_MAX 3
++static char sweet_inject_conf[SWEET_INJECT_MAX][192];
++static bool sweet_inject_parsed;
++
++static void
++sweet_inject_parse(void)
++{
++	for (int i = 0; i < SWEET_INJECT_MAX; i++) {
++		char arg[16];
++		snprintf(arg, sizeof(arg), "sweetinject%d", i);
++		if (!PE_parse_boot_argn(i == 0 ? "sweetinject" : arg, sweet_inject_conf[i],
++		    sizeof(sweet_inject_conf[0]))) {
++			sweet_inject_conf[i][0] = 0;
++		}
++	}
++	sweet_inject_parsed = true;
++}
++
++static bool
++sweet_inject_env(struct image_params *imgp, char *env, size_t size)
++{
++	const char *name, *p;
++	size_t namelen, used;
++
++	if (!sweet_inject_parsed) {
++		sweet_inject_parse();
++	}
++	if (imgp->ip_ndp == NULL) {
++		return false;
++	}
++	name = imgp->ip_ndp->ni_cnd.cn_nameptr;
++	namelen = imgp->ip_ndp->ni_cnd.cn_namelen;
++	/* only the last component matters */
++	for (const char *slash = name; (size_t)(slash - name) < namelen; slash++) {
++		if (*slash == '/' && (size_t)(slash - name) + 1 < namelen) {
++			name = slash + 1;
++			namelen = namelen - (size_t)(slash + 1 - name) - 1;
++		}
++	}
++
++	for (int i = 0; i < SWEET_INJECT_MAX; i++) {
++		const char *library = sweet_inject_conf[i];
++		size_t liblen;
++
++		if (*library == 0) {
++			continue;
++		}
++		liblen = 0;
++		while (library[liblen] != 0 && library[liblen] != ':') {
++			liblen++;
++		}
++		p = library + liblen;
++		while (*p == ':') {
++			const char *word = ++p;
++			while (*p != 0 && *p != ':') {
++				p++;
++			}
++			if ((size_t)(p - word) == namelen && namelen != 0 && liblen != 0 &&
++			    strncmp(word, name, namelen) == 0) {
++				used = strlcpy(env, "DYLD_INSERT_LIBRARIES=", size);
++				if (used + liblen >= size) {
++					return false;
++				}
++				memcpy(env + used, library, liblen);
++				env[used + liblen] = 0;
++				return true;
++			}
++		}
++	}
++	return false;
++}
++
+ static int
+ exec_extract_strings(struct image_params *imgp)
+ {
+@@ -5738,6 +5821,24 @@ exec_extract_strings(struct image_params *imgp)
+ 			goto bad;
+ 		}
+ 		imgp->ip_argspace -= new_ptr_size; /* to hold envv[] entry */
++	/* SWEET: one more variable for the programs that get our library inside them */
++	{
++		char inject_env[256];
++
++		if (sweet_inject_env(imgp, inject_env, sizeof(inject_env))) {
++			error = exec_add_user_string(imgp, CAST_USER_ADDR_T(inject_env), UIO_SYSSPACE, TRUE);
++			if (error) {
++				goto bad;
++			}
++			if (imgp->ip_argspace < new_ptr_size) {
++				error = E2BIG;
++				goto bad;
++			}
++			imgp->ip_argspace -= new_ptr_size;
++			imgp->ip_envc++;
++		}
++	}
++
+ 		imgp->ip_envc++;
+ 	}
+ 
