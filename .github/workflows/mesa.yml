@@ -1,0 +1,111 @@
+name: mesa
+
+# Builds the software OpenGL ES implementation the window server needs:
+# Mesa 25.0.7 with the softpipe gallium driver (plain C rasterizer, no LLVM, no
+# GPU) as libOSMesa.8.dylib, installed as /redwood/lib/libOSMesa.8.dylib for the
+# device.  iOS userland has no GPU driver on this port, so CoreAnimation draws
+# nothing at all (measured: every presented surface is black); with a working
+# EAGL it can use its OpenGL ES renderer, which this library backs.
+#
+# The build recipe is the one from HackiOS (oosexgang/hackios-xnu-userland,
+# tools/mk-mesa.sh), reduced to what a CPU rasterizer needs.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mesa_version:
+        description: Mesa release to build
+        default: "25.0.7"
+  push:
+    branches: [main, perseus]
+    paths:
+      - "tools/mesa/**"
+      - ".github/workflows/mesa.yml"
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          brew install -q meson ninja bison flex pkg-config
+          python3 -m venv venv
+          ./venv/bin/pip install -q mako pyyaml packaging
+          echo "SDK=$(xcrun --sdk iphoneos --show-sdk-path)" >> $GITHUB_ENV
+          clang --version | head -2
+          meson --version
+          ninja --version
+
+      - name: Fetch Mesa
+        env:
+          VERSION: ${{ github.event.inputs.mesa_version || '25.0.7' }}
+        run: |
+          set -eux
+          cd "$RUNNER_TEMP"
+          curl -sL --fail -o mesa-$VERSION.tar.xz https://archive.mesa3d.org/mesa-$VERSION.tar.xz
+          ls -l mesa-$VERSION.tar.xz
+          tar xJf mesa-$VERSION.tar.xz
+          for p in "$GITHUB_WORKSPACE"/tools/mesa/*.patch; do
+            echo "applying $(basename $p)"
+            patch -s --no-backup-if-mismatch -d mesa-$VERSION -p1 < "$p"
+          done
+
+      - name: Configure
+        env:
+          VERSION: ${{ github.event.inputs.mesa_version || '25.0.7' }}
+        run: |
+          set -eux
+          cd "$RUNNER_TEMP"
+          cat > cross.ini <<INI
+          [binaries]
+          c = ['clang', '-arch', 'arm64', '-isysroot', '$SDK', '-miphoneos-version-min=15.0']
+          cpp = ['clang++', '-arch', 'arm64', '-isysroot', '$SDK', '-miphoneos-version-min=15.0']
+          objc = ['clang', '-arch', 'arm64', '-isysroot', '$SDK', '-miphoneos-version-min=15.0']
+          ar = 'llvm-ar'
+          ranlib = 'llvm-ranlib'
+          strip = 'llvm-strip'
+          pkg-config = 'false'
+
+          [host_machine]
+          system = 'darwin'
+          subsystem = 'ios'
+          cpu_family = 'aarch64'
+          cpu = 'arm64'
+          endian = 'little'
+
+          [properties]
+          needs_exe_wrapper = true
+          INI
+          export PATH="$GITHUB_WORKSPACE/venv/bin:$PATH"
+          meson setup build mesa-$VERSION --cross-file cross.ini --wrap-mode=nofallback \
+            --prefix=/redwood --libdir=lib --buildtype=release -Db_ndebug=true \
+            -Dplatforms= -Dgallium-drivers=softpipe -Dvulkan-drivers= -Dglx=disabled -Degl=disabled -Dgbm=disabled \
+            -Dosmesa=true -Dllvm=disabled -Dshared-glapi=enabled -Dgles1=disabled -Dgles2=enabled -Dopengl=true \
+            -Dzstd=disabled -Dxmlconfig=disabled -Dexpat=disabled -Dshader-cache=disabled -Dvalgrind=disabled \
+            -Dlibunwind=disabled -Dglvnd=disabled -Dvideo-codecs= -Dtools= -Dgallium-vdpau=disabled \
+            -Dgallium-va=disabled -Dgallium-xa=disabled -Dlmsensors=disabled -Dbuild-tests=false
+
+      - name: Build
+        run: |
+          set -eux
+          cd "$RUNNER_TEMP"
+          export PATH="$GITHUB_WORKSPACE/venv/bin:$PATH"
+          ninja -C build src/gallium/targets/osmesa/libOSMesa.8.dylib 2>&1 | tail -40
+          mkdir -p out
+          llvm-strip -x -o out/libOSMesa.8.dylib build/src/gallium/targets/osmesa/libOSMesa.8.dylib
+          install_name_tool -id /redwood/lib/libOSMesa.8.dylib out/libOSMesa.8.dylib
+          ls -l out/
+          file out/libOSMesa.8.dylib || true
+          nm -gU out/libOSMesa.8.dylib | awk '$3 ~ /^_gl/ { print substr($3, 2) }' > out/exported-gl.txt
+          wc -l out/exported-gl.txt
+          cp mesa-*/src/mapi/glapi/registry/gl.xml out/gl.xml
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mesa-osmesa
+          path: |
+            ${{ runner.temp }}/out/libOSMesa.8.dylib
+            ${{ runner.temp }}/out/exported-gl.txt
+            ${{ runner.temp }}/out/gl.xml
