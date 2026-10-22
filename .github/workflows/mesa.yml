@@ -148,6 +148,6 @@ jobs:
         with:
           name: redwood-gl
           path: |
-            ${{ runner.temp }}/mesa-out/libredwood-gl.dylib
-            ${{ runner.temp }}/mesa-out/eagl_gen.h
-            ${{ runner.temp }}/mesa-out/libOSMesa.8.dylib
+            mesa-out/libredwood-gl.dylib
+            mesa-out/eagl_gen.h
+            mesa-out/libOSMesa.8.dylib
