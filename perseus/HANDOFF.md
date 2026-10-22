@@ -209,3 +209,97 @@ Next actions, in order:
 
 XNU process names are 16 characters (`MAXCOMLEN`), so `sweetsample=` must use
 the truncated names: `com.apple.datami`, not `com.apple.datamigrator`.
+
+## Third session: SpringBoard runs; the missing piece is the renderer
+
+The UI is no longer blocked by SpringBoard crashing.  What remains is that
+CoreAnimation draws nothing at all, so every frame backboardd presents is black.
+
+### What was fixed in this session
+
+* **SpringBoard aborted in the corner-mask load.** `SBDashBoardSetupViewController`
+  was presented and then SpringBoard died 82 times with "Failed to load bounding
+  path bitmap data ... BoundingPathBitmap-1125x2436-375x812-3.00x".  In this
+  build's `UIKitCore.framework/BoundingPathData.bundle/Assets.car` that name
+  carries only the bare asset, while `1080x2340-375x812`, `1170x2532-390x844`
+  and `1284x2778-428x926` also have the `-A` rendition and the external `.data`
+  blob.  Patch 0087 presents the panel as 1170x2532 (390x844 points at 3x), so
+  UIKit asks for a complete name.  SpringBoard stopped crashing.
+* **The on-screen Apple logo and progress bar were the kernel's**, not iOS's:
+  the macOS-flavoured build draws `vc_progress` over the whole panel and paints
+  a black background, so every iOS frame was hidden behind it.  Boot with
+  `-noprogress` (pexpert/arm/pe_init.c accepts it) and the panel shows only what
+  userland presents.
+* **backboardd spun forever on `AppleM2ScalerCSCDriver`** ("IOServiceMatchingfailed
+  for: AppleM2ScalerCSCDriver", hundreds of lines, never finishing display
+  setup).  Patch 0088 registers a stub service of that name with a user client
+  that answers every selector with success; the loop is gone and backboardd logs
+  `SWEET SCALER: backboardd sel 1`.
+* Patch 0090 registers `IOAcceleratorES` / `IOAcceleratorESLegacy` stubs - they
+  register, but CoreAnimation never opens them (no `SWEET ACCEL: <proc> sel N`),
+  so they do not help.
+
+### The measured blocker
+
+Patch 0089 samples the surface that `present()` copies and logs an XOR and a
+non-black pixel count.  Every sample reads:
+
+    SWEET FB: present surface 5 1080x2340 xor 0x00000000 nonblack 0
+
+So the frames are empty: backboardd swaps 1000+ 1170x2532 surfaces, SpringBoard
+runs (sampler shows it idle in CFRunLoop, then doing RunningBoard work), Setup
+is exec'd, the display is powered on - and every pixel is black.  The display,
+the surface API, the present path and the window server are all fine; the
+renderer is what is missing.
+
+### The known-good approach (HackiOS)
+
+`github.com/oosexgang/hackios-xnu-userland` runs the unmodified iOS 16.5
+userland on a phone and in QEMU.  Its notes say CoreAnimation's render server
+draws with Metal, else with OpenGL ES, else with its **own software
+rasterizer**.  Two ways they make that work:
+
+* `userland/src/inject.c` (injected into backboardd) patches CoreAnimation's
+  C++ vtables so the render server takes its software rasterizer.  The addresses
+  are those of **iOS 16.5 (20F66) iPhone10,3** and every one is verified before
+  use ("found %#lx, expected %#lx; left alone"), so the prebuilt dylibs do not
+  apply to our 16.7.16 (20H392) userland.
+* the `GL=1` route: Mesa 25.0.7 built with the `softpipe` gallium driver (pure C
+  rasterizer, no LLVM, no GPU) as `libOSMesa.8.dylib` (15 MB), plus
+  `userland/src/eagl.c` -> `libredwood-gl.dylib`, which replaces the six
+  `EAGLContext` methods CoreAnimation asks for and hands the GL work to OSMesa.
+  With a working EAGL, CA picks its OpenGL ES renderer by itself - no CA
+  patching needed.  `eagl.c` needs the table of iOS OpenGL ES entry points
+  (`userland/src/eagl_slots.txt`) which is likewise 16.5-specific.
+
+Our root image has none of this; Apple's `OpenGLES.framework` cannot render
+without a GPU driver, so CA has no renderer and produces empty frames.
+
+### Next actions, in order of expected value
+
+1. **Mesa route.** Build Mesa 25.0.7 with `softpipe` for iOS arm64 in CI (the
+   macOS runner has Xcode's iPhoneOS SDK; meson/ninja/bison/flex from brew),
+   produce `libOSMesa.8.dylib`, compile a version of `eagl.c` against it, and
+   drop both into the image at `/redwood/lib/`, injecting into backboardd and
+   SpringBoard through launchd `EnvironmentVariables`
+   (`DYLD_INSERT_LIBRARIES`) with `tools/patch-launchd-plist.py`.  The GL entry
+   point table must be regenerated for 20H392 (see `userland/mkeagl.py`,
+   `gl.xml`, `exported-gl.txt`).
+2. **CA vtable route.** Find `CA::WindowServer::EAGLServer::renderer()` and the
+   display-update path in *our* QuartzCore (dyld cache, 20H392) and patch the
+   same way HackiOS does.  More reverse engineering than (1), but no Mesa build.
+3. **USB live log** (patches 0072-0077): DWC3 + QUSB2 PHY from the stock DTB,
+   CDC-ECM, console log over UDP to 192.168.7.1:5140.  Would end the TWRP round
+   trips that every iteration currently needs.
+
+### Facts worth remembering
+
+* The "stalls" in early boot (seputil, `mount`, mobile_obliterator) are the
+  polled UFS driver being extremely slow, not deadlocks: minutes later the same
+  boot continues.  Give a boot 20+ minutes before calling it hung.
+* Boot args that matter now:
+  `-noprogress sweetfb_noconsole=1 ufsrw=1 rootrw=1 unentitled_ios_sim_launch=1
+  sweetsample=SpringBoard,backboardd,com.apple.datami rd=ufsroot0 cpus=8`.
+* `sweetsample` needs 16-character names (`com.apple.datami`).
+* `SWEET FB: display off/on` is backboardd's power request (patch 0079), which
+  fades the panel to black and holds it until a wake event.
