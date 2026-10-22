@@ -35,7 +35,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-13
     env:
       VERSION: ${{ github.event.inputs.mesa_version || '25.0.7' }}
     steps:
