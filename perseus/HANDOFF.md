@@ -303,3 +303,66 @@ without a GPU driver, so CA has no renderer and produces empty frames.
 * `sweetsample` needs 16-character names (`com.apple.datami`).
 * `SWEET FB: display off/on` is backboardd's power request (patch 0079), which
   fades the panel to black and holds it until a wake event.
+
+## The software OpenGL ES stack (fourth session)
+
+With the renderer missing, CoreAnimation produced empty frames (patch 0089
+sampling: every presented surface `nonblack 0`).  The fix is the route HackiOS
+uses: give CA a working OpenGL ES, and it draws with its GLES renderer - on the
+CPU, through Mesa's softpipe driver, with no GPU driver at all.
+
+### What is built, and how
+
+* `tools/mesa/osmesa-es-profile.patch` (from HackiOS, MIT) gives OSMesa an
+  OpenGL ES profile.
+* `.github/workflows/mesa.yml` builds, in one macOS job:
+  * Mesa 25.0.7 with `-Dgallium-drivers=softpipe -Dosmesa=true` against Xcode's
+    iPhoneOS SDK -> `libOSMesa.8.dylib` (13 MB, arm64), install name
+    `/redwood/lib/libOSMesa.8.dylib`;
+  * HackiOS's `eagl.c` + `gl_osmesa.c` (vendored in `tools/redwood/`) linked
+    against it -> `libredwood-gl.dylib` (346 KB).  The shim has its own
+    constructor: on load it replaces the six `-[EAGLContext ...]` methods
+    CoreAnimation asks for and hands every `gl*` call to OSMesa, so no
+    CoreAnimation patching is needed (which the rest of HackiOS needs, and which
+    is tied to iOS 16.5 addresses).
+  * the mkeagl.py generated header comes from `tools/redwood/eagl_slots.txt`
+    (the table offsets of iOS 16.5's OpenGL ES; OpenGL ES has been frozen since
+    iOS 12, so it is expected to hold for 16.7 too - not yet verified).
+
+GitHub could not hand out a macOS runner for hours ("The job was not acquired by
+Runner of type hosted"), so the same two libraries can also be built locally on
+the Linux VM: `theos/sdks` has `iPhoneOS16.5.sdk`, and clang-18 + lld-18 + that
+SDK link Mach-O correctly (`-fuse-ld=lld`, framework TBs resolved through
+`-isysroot`; Xcode 15.4 has no `llvm-ar`, so meson must use Apple's
+`ar`/`ranlib`/`strip`).
+
+### Installing it into a root image
+
+    tools/redwood-image.sh ios16-root2.img libOSMesa.8.dylib libredwood-gl.dylib
+
+puts both at `/redwood/lib/` and adds
+`DYLD_INSERT_LIBRARIES=/redwood/lib/libredwood-gl.dylib` to
+`com.apple.backboardd` in `/System/Library/xpc/launchd.plist`
+(`tools/patch-launchd-inject.py`).  The image must be fsck'ed first (Linux will
+not mount an unclean HFS+ volume read-write) and booted with
+`launchd_unsecure_cache=1` so launchd reads that plist rather than its cache.
+
+Boot args for this image:
+
+    debug=0x14e serial=3 cpus=8 keepsyms=1 -v -enable_kprintf_spam -noprogress
+    launchd_unsecure_cache=1 ufsrw=1 rootrw=1 unentitled_ios_sim_launch=1
+    sweetfb_noconsole=1 sweetsample=SpringBoard,backboardd,com.apple.datami
+    rd=ufsroot0
+
+### What to look for in the log
+
+    redwood-gl: N of 6 methods of EAGLContext are ours; OpenGL ES by ...
+        the shim loaded and took over EAGLContext
+    redwood-gl: <counts>
+        CoreAnimation is actually drawing through it
+    SWEET FB: present surface ... nonblack <non-zero>
+        pixels reached the surface the panel copy takes
+
+If the screen stays black with no `redwood-gl:` lines at all, the injection did
+not happen: check that launchd took the plist (the boot arg) and that the
+library's install name matches its path.
