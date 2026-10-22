@@ -1,6 +1,6 @@
 name: mesa
 
-# The software OpenGL ES implementation the window server needs.
+# The software OpenGL ES stack the window server needs.
 #
 # CoreAnimation draws nothing on this port: every surface backboardd presents is
 # black (measured with patch 0089), because there is no renderer - no Metal
@@ -8,13 +8,17 @@ name: mesa
 # (oosexgang/hackios-xnu-userland) shows the way: CA has an OpenGL ES renderer,
 # and behind it any GL implementation will do.
 #
-#   build        Mesa 25.0.7 with the softpipe gallium driver (plain C, no LLVM,
-#                no GPU) as /redwood/lib/libOSMesa.8.dylib, plus the list of gl*
-#                it exports and gl.xml (the inputs the EAGL shim generator needs)
-#   redwood-gl   libredwood-gl.dylib: HackiOS's eagl.c + gl_osmesa.c, which
-#                replace the six -[EAGLContext ...] methods CoreAnimation asks
-#                for and hand the drawing to OSMesa.  It has its own
-#                constructor, so loading it into backboardd is enough.
+# One job builds both halves:
+#   libOSMesa.8.dylib    Mesa 25.0.7 with the softpipe gallium driver (plain C,
+#                        no LLVM, no GPU), installed as /redwood/lib/...
+#   libredwood-gl.dylib  HackiOS's eagl.c + gl_osmesa.c over it: it replaces the
+#                        six -[EAGLContext ...] methods CoreAnimation asks for.
+#                        Its constructor runs on load, so injecting it into
+#                        backboardd is enough.
+#
+# tools/redwood-image.sh installs both into a root image and adds
+# DYLD_INSERT_LIBRARIES to the backboardd launchd job; boot that image with
+# launchd_unsecure_cache=1.
 
 on:
   workflow_dispatch:
@@ -32,6 +36,8 @@ on:
 jobs:
   build:
     runs-on: macos-14
+    env:
+      VERSION: ${{ github.event.inputs.mesa_version || '25.0.7' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -44,8 +50,6 @@ jobs:
           clang --version | head -2
 
       - name: Fetch Mesa
-        env:
-          VERSION: ${{ github.event.inputs.mesa_version || '25.0.7' }}
         run: |
           set -eux
           cd "$RUNNER_TEMP"
@@ -57,8 +61,6 @@ jobs:
           done
 
       - name: Configure
-        env:
-          VERSION: ${{ github.event.inputs.mesa_version || '25.0.7' }}
         run: |
           set -eux
           cd "$RUNNER_TEMP"
@@ -91,7 +93,7 @@ jobs:
             -Dlibunwind=disabled -Dglvnd=disabled -Dvideo-codecs= -Dtools= -Dgallium-vdpau=disabled \
             -Dgallium-va=disabled -Dgallium-xa=disabled -Dlmsensors=disabled -Dbuild-tests=false
 
-      - name: Build
+      - name: Build Mesa
         run: |
           set -eux
           cd "$RUNNER_TEMP"
@@ -100,36 +102,15 @@ jobs:
           mkdir -p out
           xcrun strip -x -o out/libOSMesa.8.dylib build/src/gallium/targets/osmesa/libOSMesa.8.dylib
           install_name_tool -id /redwood/lib/libOSMesa.8.dylib out/libOSMesa.8.dylib
-          ls -l out/
           nm -gU out/libOSMesa.8.dylib | awk '$3 ~ /^_gl/ { print substr($3, 2) }' > out/exported-gl.txt
           wc -l out/exported-gl.txt
           cp mesa-*/src/mapi/glapi/registry/gl.xml out/gl.xml
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: mesa-osmesa
-          path: |
-            ${{ runner.temp }}/out/libOSMesa.8.dylib
-            ${{ runner.temp }}/out/exported-gl.txt
-            ${{ runner.temp }}/out/gl.xml
-
-  redwood-gl:
-    needs: build
-    runs-on: macos-14
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: mesa-osmesa
-          path: mesa-out
+          ls -l out/
 
       - name: Build the EAGL shim
         run: |
           set -eux
-          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
-          cd mesa-out
-          ls -l
+          cd "$RUNNER_TEMP/out"
           python3 "$GITHUB_WORKSPACE/tools/redwood/mkeagl.py" \
             "$GITHUB_WORKSPACE/tools/redwood/eagl_slots.txt" gl.xml exported-gl.txt \
             "$GITHUB_WORKSPACE/tools/redwood/eagl.c" > eagl_gen.h
@@ -145,9 +126,12 @@ jobs:
           otool -L libredwood-gl.dylib | head -8
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: redwood-gl
+          name: mesa-osmesa
           path: |
-            mesa-out/libredwood-gl.dylib
-            mesa-out/eagl_gen.h
-            mesa-out/libOSMesa.8.dylib
+            ${{ runner.temp }}/out/libOSMesa.8.dylib
+            ${{ runner.temp }}/out/libredwood-gl.dylib
+            ${{ runner.temp }}/out/eagl_gen.h
+            ${{ runner.temp }}/out/exported-gl.txt
+            ${{ runner.temp }}/out/gl.xml
