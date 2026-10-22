@@ -67,9 +67,9 @@ jobs:
           c = ['clang', '-arch', 'arm64', '-isysroot', '$SDK', '-miphoneos-version-min=15.0']
           cpp = ['clang++', '-arch', 'arm64', '-isysroot', '$SDK', '-miphoneos-version-min=15.0']
           objc = ['clang', '-arch', 'arm64', '-isysroot', '$SDK', '-miphoneos-version-min=15.0']
-          ar = 'llvm-ar'
-          ranlib = 'llvm-ranlib'
-          strip = 'llvm-strip'
+          ar = ['xcrun', 'llvm-ar']
+          ranlib = ['xcrun', 'llvm-ranlib']
+          strip = ['xcrun', 'llvm-strip']
           pkg-config = 'false'
 
           [host_machine]
@@ -98,7 +98,7 @@ jobs:
           export PATH="$GITHUB_WORKSPACE/venv/bin:$PATH"
           ninja -C build src/gallium/targets/osmesa/libOSMesa.8.dylib 2>&1 | tail -40
           mkdir -p out
-          llvm-strip -x -o out/libOSMesa.8.dylib build/src/gallium/targets/osmesa/libOSMesa.8.dylib
+          xcrun llvm-strip -x -o out/libOSMesa.8.dylib build/src/gallium/targets/osmesa/libOSMesa.8.dylib
           install_name_tool -id /redwood/lib/libOSMesa.8.dylib out/libOSMesa.8.dylib
           ls -l out/
           nm -gU out/libOSMesa.8.dylib | awk '$3 ~ /^_gl/ { print substr($3, 2) }' > out/exported-gl.txt
