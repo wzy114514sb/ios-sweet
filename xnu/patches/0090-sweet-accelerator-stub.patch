@@ -1,0 +1,144 @@
+diff --git a/iokit/Kernel/arm/SweetAccelerator.cpp b/iokit/Kernel/arm/SweetAccelerator.cpp
+new file mode 100644
+index 0000000..0ca5324
+--- /dev/null
++++ b/iokit/Kernel/arm/SweetAccelerator.cpp
+@@ -0,0 +1,105 @@
++/*
++ * Built-in graphics accelerator stubs for SWEET.
++ *
++ * There is no GPU on this port, and CoreAnimation asks IOKit for one before it
++ * can compose anything:
++ *
++ *   IOServiceGetMatchingService(kIOMasterPortDefault,
++ *       IOServiceMatching("IOAcceleratorES"));        (also IOAcceleratorESLegacy)
++ *
++ * backboardd logs "IOServiceFirstMatch ... -> none" for every one of those
++ * names.  With no accelerator at all CoreAnimation produces empty frames:
++ * backboardd keeps swapping 1170x2532 surfaces (1000+ swaps) but every pixel is
++ * black, so SpringBoard's window server is up and yet nothing reaches the panel.
++ *
++ * Publishing these services gives CoreAnimation an accelerator object to talk
++ * to.  Its user client answers every selector with success and zeroed output;
++ * the software compositor that CA falls back to when the accelerator is not a
++ * real GPU then has what it needs.  The point is the object graph, not
++ * rendering - the panel copy in SweetFramebuffer still does the presenting.
++ */
++#include <pexpert/arm64/board_config.h>
++
++#if defined(SWEET)
++#include <IOKit/IOService.h>
++#include <IOKit/IOUserClient.h>
++#include <IOKit/IOKitKeys.h>
++#include <IOKit/IOLib.h>
++#include <IOKit/IOMemoryDescriptor.h>
++#include <sys/proc.h>
++
++class SweetAccelerator : public IOService {
++	OSDeclareDefaultStructors(SweetAccelerator);
++
++public:
++	bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
++};
++
++OSDefineMetaClassAndStructors(SweetAccelerator, IOService);
++
++bool
++SweetAccelerator::start(IOService *provider)
++{
++	if (!IOService::start(provider)) {
++		return false;
++	}
++	setProperty(kIOUserClientClassKey, "SweetAcceleratorUserClient");
++	registerService();
++	IOLog("SWEET ACCEL: %s registered\n", getMetaClass()->getClassName());
++	return true;
++}
++
++class SweetAcceleratorUserClient : public IOUserClient {
++	OSDeclareDefaultStructors(SweetAcceleratorUserClient);
++
++public:
++	IOReturn clientClose(void) APPLE_KEXT_OVERRIDE;
++	IOReturn externalMethod(uint32_t selector, IOExternalMethodArguments *args,
++	    IOExternalMethodDispatch *dispatch, OSObject *target,
++	    void *reference) APPLE_KEXT_OVERRIDE;
++};
++
++OSDefineMetaClassAndStructors(SweetAcceleratorUserClient, IOUserClient);
++
++IOReturn
++SweetAcceleratorUserClient::clientClose(void)
++{
++	terminate();
++	return kIOReturnSuccess;
++}
++
++static uint64_t sweet_accel_logged;     /* selectors already logged (< 64) */
++
++IOReturn
++SweetAcceleratorUserClient::externalMethod(uint32_t selector,
++    IOExternalMethodArguments *args, __unused IOExternalMethodDispatch *dispatch,
++    __unused OSObject *target, __unused void *reference)
++{
++	for (uint32_t i = 0; i < args->scalarOutputCount; i++) {
++		args->scalarOutput[i] = 0;
++	}
++	if (args->structureOutput != NULL && args->structureOutputSize > 0) {
++		bzero(args->structureOutput, args->structureOutputSize);
++	}
++	if (selector < 64 && !(sweet_accel_logged & (1ULL << selector))) {
++		sweet_accel_logged |= 1ULL << selector;
++		char name[32];
++		proc_selfname(name, sizeof(name));
++		IOLog("SWEET ACCEL: %s sel %u in %u/%u out %u/%u\n", name, selector,
++		    args->scalarInputCount, args->structureInputSize,
++		    args->scalarOutputCount, args->structureOutputSize);
++	}
++	return kIOReturnSuccess;
++}
++
++/* Two personalities need two concrete classes. */
++class IOAcceleratorES : public SweetAccelerator {
++	OSDeclareDefaultStructors(IOAcceleratorES);
++};
++OSDefineMetaClassAndStructors(IOAcceleratorES, SweetAccelerator);
++
++class IOAcceleratorESLegacy : public SweetAccelerator {
++	OSDeclareDefaultStructors(IOAcceleratorESLegacy);
++};
++OSDefineMetaClassAndStructors(IOAcceleratorESLegacy, SweetAccelerator);
++#endif /* SWEET */
+diff --git a/iokit/KernelConfigTables.cpp b/iokit/KernelConfigTables.cpp
+index 319c0f7..3e9a6a7 100644
+--- a/iokit/KernelConfigTables.cpp
++++ b/iokit/KernelConfigTables.cpp
+@@ -78,6 +78,16 @@ const char * gIOKernelConfigTables =
+     "     'IOMatchCategory' = AppleM2ScalerCSCDriver;"
+     "   },"
+     "   {"
++    "     'IOClass'         = IOAcceleratorES;"
++    "     'IOProviderClass' = IOResources;"
++    "     'IOMatchCategory' = IOAcceleratorES;"
++    "   },"
++    "   {"
++    "     'IOClass'         = IOAcceleratorESLegacy;"
++    "     'IOProviderClass' = IOResources;"
++    "     'IOMatchCategory' = IOAcceleratorESLegacy;"
++    "   },"
++    "   {"
+     "     'IOClass'         = SweetHIDButtons;"
+     "     'IOProviderClass' = IOResources;"
+     "     'IOMatchCategory' = SweetHIDButtons;"
+diff --git a/iokit/conf/files.arm64 b/iokit/conf/files.arm64
+index add1623..9bb4f73 100644
+--- a/iokit/conf/files.arm64
++++ b/iokit/conf/files.arm64
+@@ -15,6 +15,7 @@ iokit/Kernel/arm/SweetKeyStore.cpp                               optional iokitc
+ iokit/Kernel/arm/SweetWatchdog.cpp                               optional iokitcpp
+ iokit/Kernel/arm/SweetAMFI.cpp                                   optional iokitcpp
+ iokit/Kernel/arm/SweetScaler.cpp                                 optional iokitcpp
++iokit/Kernel/arm/SweetAccelerator.cpp                            optional iokitcpp
+ iokit/Kernel/arm/SweetSurface.cpp                                optional iokitcpp
+ iokit/Kernel/arm/SweetFramebuffer.cpp                            optional iokitcpp
+ iokit/Kernel/arm/SweetBattery.cpp                                optional iokitcpp
