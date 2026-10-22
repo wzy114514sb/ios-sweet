@@ -1,0 +1,26 @@
+diff --git a/bsd/kern/sweet_amfi.c b/bsd/kern/sweet_amfi.c
+index 6aaf7d9..59dbbf7 100644
+--- a/bsd/kern/sweet_amfi.c
++++ b/bsd/kern/sweet_amfi.c
+@@ -306,6 +306,12 @@ sweet_sandbox_syscall(struct proc *p, int call, __unused user_addr_t arg)
+ }
+ 
+ /*
++ * The policy's name matters: dyld calls __mac_syscall("AMFI", ...), and the MAC
++ * layer looks the policy up by that name, so registering as anything else (this
++ * used to be "SWEET AMFI") leaves the question unanswered and dyld then refuses
++ * DYLD_INSERT_LIBRARIES - which is how the software OpenGL ES was supposed to
++ * get into the window server.
++ *
+  * dyld asks AMFI (through __mac_syscall request 0x5a, "check dyld policy") what it
+  * may do for the process it is starting: whether the DYLD_* variables, @paths,
+  * inserted libraries and interposing are allowed.  With no handler the question
+@@ -401,7 +407,7 @@ static struct mac_policy_conf sweet_sandbox_mac_conf = {
+ static mac_policy_handle_t sweet_sandbox_mac_handle;
+ 
+ static struct mac_policy_conf sweet_amfi_mac_conf = {
+-	.mpc_name = "SWEET AMFI",
++	.mpc_name = "AMFI",
+ 	.mpc_fullname = "SWEET built-in Mobile File Integrity",
+ 	.mpc_ops = &sweet_amfi_mac_ops,
+ };
