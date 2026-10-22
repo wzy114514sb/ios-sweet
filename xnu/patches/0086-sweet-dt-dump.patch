@@ -1,0 +1,73 @@
+diff --git a/iokit/Kernel/arm/SweetPlatformExpert.cpp b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+index 15f81b2..be8c346 100644
+--- a/iokit/Kernel/arm/SweetPlatformExpert.cpp
++++ b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+@@ -33,9 +33,68 @@ SweetPlatformExpert::start(IOService *provider)
+ 	}
+ 	registerService();
+ 	IOLog("SWEET: platform expert registered\n");
++	sweet_dt_dump();
+ 	return true;
+ }
+ 
++/*
++ * SWEET: log the device-tree nodes IOKit published and, for /product, the
++ * property names it carries.  MobileGestalt builds its device answers from
++ * that node; CoreUI reports "couldn't get kMGArtworkDisplayGamut" when the
++ * lookup fails, which then breaks the P3-thinned UIKit asset catalogs.
++ */
++static void
++sweet_dt_dump(void)
++{
++	IORegistryEntry *root = IORegistryEntry::fromPath("/", gIODTPlane);
++	if (root == NULL) {
++		IOLog("SWEET DT: no root\n");
++		return;
++	}
++
++	OSIterator *it = root->getChildIterator(gIODTPlane);
++	if (it != NULL) {
++		int n = 0;
++		OSObject *o;
++		while (n < 40 && (o = it->getNextObject()) != NULL) {
++			IORegistryEntry *e = OSDynamicCast(IORegistryEntry, o);
++			if (e != NULL) {
++				IOLog("SWEET DT: node %s\n", e->getName());
++				n++;
++			}
++		}
++		it->release();
++	}
++
++	IORegistryEntry *prod = root->childFromPath("product", gIODTPlane);
++	if (prod == NULL) {
++		IOLog("SWEET DT: /product missing\n");
++		root->release();
++		return;
++	}
++	OSDictionary *props = prod->getPropertyTable();
++	if (props == NULL) {
++		IOLog("SWEET DT: /product has no properties\n");
++	} else {
++		IOLog("SWEET DT: /product has %u properties\n", props->getCount());
++		OSIterator *ki = props->getIterator();
++		if (ki != NULL) {
++			int n = 0;
++			OSObject *k;
++			while (n < 75 && (k = ki->getNextObject()) != NULL) {
++				OSSymbol *sym = OSDynamicCast(OSSymbol, k);
++				if (sym != NULL) {
++					IOLog("SWEET DT: /product key %s\n", sym->getCStringNoCopy());
++					n++;
++				}
++			}
++			ki->release();
++		}
++	}
++	prod->release();
++	root->release();
++}
++
+ const char *
+ SweetPlatformExpert::deleteList(void)
+ {
