@@ -1,8 +1,17 @@
 diff --git a/iokit/Kernel/arm/SweetPlatformExpert.cpp b/iokit/Kernel/arm/SweetPlatformExpert.cpp
-index 15f81b2..be8c346 100644
+index 15f81b2..4d18ea7 100644
 --- a/iokit/Kernel/arm/SweetPlatformExpert.cpp
 +++ b/iokit/Kernel/arm/SweetPlatformExpert.cpp
-@@ -33,9 +33,68 @@ SweetPlatformExpert::start(IOService *provider)
+@@ -10,6 +10,8 @@
+ #include <IOKit/IODeviceTreeSupport.h>
+ #include <IOKit/IOLib.h>
+ 
++static void sweet_dt_dump(void);
++
+ class SweetPlatformExpert : public IODTPlatformExpert {
+ 	OSDeclareDefaultStructors(SweetPlatformExpert);
+ 
+@@ -33,9 +35,65 @@ SweetPlatformExpert::start(IOService *provider)
  	}
  	registerService();
  	IOLog("SWEET: platform expert registered\n");
@@ -50,18 +59,15 @@ index 15f81b2..be8c346 100644
 +		IOLog("SWEET DT: /product has no properties\n");
 +	} else {
 +		IOLog("SWEET DT: /product has %u properties\n", props->getCount());
-+		OSIterator *ki = props->getIterator();
-+		if (ki != NULL) {
-+			int n = 0;
-+			OSObject *k;
-+			while (n < 75 && (k = ki->getNextObject()) != NULL) {
-+				OSSymbol *sym = OSDynamicCast(OSSymbol, k);
++		OSArray *keys = props->copyKeys();
++		if (keys != NULL) {
++			for (unsigned int i = 0; i < keys->getCount() && i < 80; i++) {
++				OSSymbol *sym = OSDynamicCast(OSSymbol, keys->getObject(i));
 +				if (sym != NULL) {
 +					IOLog("SWEET DT: /product key %s\n", sym->getCStringNoCopy());
-+					n++;
 +				}
 +			}
-+			ki->release();
++			keys->release();
 +		}
 +	}
 +	prod->release();
