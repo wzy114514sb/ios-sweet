@@ -1,0 +1,128 @@
+diff --git a/iokit/Kernel/arm/SweetScaler.cpp b/iokit/Kernel/arm/SweetScaler.cpp
+new file mode 100644
+index 0000000..b2241e7
+--- /dev/null
++++ b/iokit/Kernel/arm/SweetScaler.cpp
+@@ -0,0 +1,94 @@
++/*
++ * Built-in display scaler / colour-space-conversion driver for SWEET.
++ *
++ * The iPhone X display path pairs AppleCLCD with AppleM2ScalerCSCDriver, and
++ * backboardd looks for it once it starts driving the panel:
++ *
++ *   IOServiceGetMatchingService(kIOMasterPortDefault,
++ *       IOServiceMatching("AppleM2ScalerCSCDriver"));
++ *
++ * On this port nothing provides that service, so the lookup returns NULL and
++ * backboardd retries in a tight loop ("IOServiceMatchingfailed for:
++ * AppleM2ScalerCSCDriver", hundreds of console lines).  It never finishes its
++ * display setup, so the shell it hands to SpringBoard never appears and the
++ * panel is powered off and on again and again.
++ *
++ * This stub satisfies the match.  Its user client answers every selector with
++ * success and zeroed output: there is no hardware scaler (the panel copy in
++ * SweetFramebuffer already places the surface), and the point is to let
++ * backboardd's setup complete.
++ */
++#include <pexpert/arm64/board_config.h>
++
++#if defined(SWEET)
++#include <IOKit/IOService.h>
++#include <IOKit/IOUserClient.h>
++#include <IOKit/IOKitKeys.h>
++#include <IOKit/IOLib.h>
++#include <IOKit/IOMemoryDescriptor.h>
++#include <sys/proc.h>
++
++class AppleM2ScalerCSCDriver : public IOService {
++	OSDeclareDefaultStructors(AppleM2ScalerCSCDriver);
++
++public:
++	bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
++};
++
++OSDefineMetaClassAndStructors(AppleM2ScalerCSCDriver, IOService);
++
++bool
++AppleM2ScalerCSCDriver::start(IOService *provider)
++{
++	if (!IOService::start(provider)) {
++		return false;
++	}
++	setProperty(kIOUserClientClassKey, "AppleM2ScalerCSCDriverUserClient");
++	registerService();
++	IOLog("SWEET SCALER: AppleM2ScalerCSCDriver service registered\n");
++	return true;
++}
++
++class AppleM2ScalerCSCDriverUserClient : public IOUserClient {
++	OSDeclareDefaultStructors(AppleM2ScalerCSCDriverUserClient);
++
++public:
++	IOReturn clientClose(void) APPLE_KEXT_OVERRIDE;
++	IOReturn externalMethod(uint32_t selector, IOExternalMethodArguments *args,
++	    IOExternalMethodDispatch *dispatch, OSObject *target,
++	    void *reference) APPLE_KEXT_OVERRIDE;
++};
++
++OSDefineMetaClassAndStructors(AppleM2ScalerCSCDriverUserClient, IOUserClient);
++
++IOReturn
++AppleM2ScalerCSCDriverUserClient::clientClose(void)
++{
++	terminate();
++	return kIOReturnSuccess;
++}
++
++static uint64_t sweet_scaler_logged;    /* selectors already logged (< 64) */
++
++IOReturn
++AppleM2ScalerCSCDriverUserClient::externalMethod(uint32_t selector,
++    IOExternalMethodArguments *args, __unused IOExternalMethodDispatch *dispatch,
++    __unused OSObject *target, __unused void *reference)
++{
++	for (uint32_t i = 0; i < args->scalarOutputCount; i++) {
++		args->scalarOutput[i] = 0;
++	}
++	if (args->structureOutput != NULL && args->structureOutputSize > 0) {
++		bzero(args->structureOutput, args->structureOutputSize);
++	}
++	if (selector < 64 && !(sweet_scaler_logged & (1ULL << selector))) {
++		sweet_scaler_logged |= 1ULL << selector;
++		char name[32];
++		proc_selfname(name, sizeof(name));
++		IOLog("SWEET SCALER: %s sel %u in %u/%u out %u/%u\n", name, selector,
++		    args->scalarInputCount, args->structureInputSize,
++		    args->scalarOutputCount, args->structureOutputSize);
++	}
++	return kIOReturnSuccess;
++}
++#endif /* SWEET */
+diff --git a/iokit/KernelConfigTables.cpp b/iokit/KernelConfigTables.cpp
+index d8cab5a..319c0f7 100644
+--- a/iokit/KernelConfigTables.cpp
++++ b/iokit/KernelConfigTables.cpp
+@@ -73,6 +73,11 @@ const char * gIOKernelConfigTables =
+     "     'IOMatchCategory' = AppleMobileFileIntegrity;"
+     "   },"
+     "   {"
++    "     'IOClass'         = AppleM2ScalerCSCDriver;"
++    "     'IOProviderClass' = IOResources;"
++    "     'IOMatchCategory' = AppleM2ScalerCSCDriver;"
++    "   },"
++    "   {"
+     "     'IOClass'         = SweetHIDButtons;"
+     "     'IOProviderClass' = IOResources;"
+     "     'IOMatchCategory' = SweetHIDButtons;"
+diff --git a/iokit/conf/files.arm64 b/iokit/conf/files.arm64
+index 39d1e5c..add1623 100644
+--- a/iokit/conf/files.arm64
++++ b/iokit/conf/files.arm64
+@@ -14,6 +14,7 @@ iokit/Kernel/arm/SweetEntitlements.cpp                           optional iokitc
+ iokit/Kernel/arm/SweetKeyStore.cpp                               optional iokitcpp
+ iokit/Kernel/arm/SweetWatchdog.cpp                               optional iokitcpp
+ iokit/Kernel/arm/SweetAMFI.cpp                                   optional iokitcpp
++iokit/Kernel/arm/SweetScaler.cpp                                 optional iokitcpp
+ iokit/Kernel/arm/SweetSurface.cpp                                optional iokitcpp
+ iokit/Kernel/arm/SweetFramebuffer.cpp                            optional iokitcpp
+ iokit/Kernel/arm/SweetBattery.cpp                                optional iokitcpp
