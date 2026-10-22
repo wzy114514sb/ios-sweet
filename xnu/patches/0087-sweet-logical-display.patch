@@ -1,0 +1,29 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index a62416c..efb0efc 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -74,12 +74,20 @@ enum {
+  * The iOS userland only has status bar / layout data for real iPhone
+  * screens (UIKit: "No status bar visual provider for screen", the red
+  * rdar://45025538 bar for 360x800 points). The display is therefore
+- * presented as the iPhone X panel, 1125x2436 (375x812 points @3x), and the
+- * centered 1080x2400 part of it is shown on the 1080x2400 panel.
++ * presented as 1170x2532 (390x844 points @3x, iPhone 12/13) and the centered
++ * 1080x2340 part of it is shown on the panel.
++ *
++ * Why 1170x2532: UIKit builds the name of the screen-corner mask it needs as
++ * BoundingPathBitmap-<pixels>-<points>-<scale>, and in this build's
++ * BoundingPathData bundle only some of those names carry the -A rendition and
++ * the external .data blob.  1125x2436-375x812-3.00x has neither, so
++ * _UIScreenComplexBoundingPathUtilities raises and SpringBoard aborts right
++ * after presenting SBDashBoardSetupViewController; 1170x2532-390x844-3.00x is
++ * complete.
+  * Boot-arg sweetfb_native=1 presents the real panel size instead.
+  */
+-#define SWEET_FB_LOGICAL_W              1125
+-#define SWEET_FB_LOGICAL_H              2436
++#define SWEET_FB_LOGICAL_W              1170
++#define SWEET_FB_LOGICAL_H              2532
+ #define SWEET_FB_FORMAT_BGRA            0x42475241
+ 
+ class IOMobileFramebuffer : public IOService {
