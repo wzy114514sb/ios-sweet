@@ -1,14 +1,20 @@
 name: mesa
 
-# Builds the software OpenGL ES implementation the window server needs:
-# Mesa 25.0.7 with the softpipe gallium driver (plain C rasterizer, no LLVM, no
-# GPU) as libOSMesa.8.dylib, installed as /redwood/lib/libOSMesa.8.dylib for the
-# device.  iOS userland has no GPU driver on this port, so CoreAnimation draws
-# nothing at all (measured: every presented surface is black); with a working
-# EAGL it can use its OpenGL ES renderer, which this library backs.
+# The software OpenGL ES implementation the window server needs.
 #
-# The build recipe is the one from HackiOS (oosexgang/hackios-xnu-userland,
-# tools/mk-mesa.sh), reduced to what a CPU rasterizer needs.
+# CoreAnimation draws nothing on this port: every surface backboardd presents is
+# black (measured with patch 0089), because there is no renderer - no Metal
+# without a GPU driver, and Apple's OpenGL ES cannot draw either.  HackiOS
+# (oosexgang/hackios-xnu-userland) shows the way: CA has an OpenGL ES renderer,
+# and behind it any GL implementation will do.
+#
+#   build        Mesa 25.0.7 with the softpipe gallium driver (plain C, no LLVM,
+#                no GPU) as /redwood/lib/libOSMesa.8.dylib, plus the list of gl*
+#                it exports and gl.xml (the inputs the EAGL shim generator needs)
+#   redwood-gl   libredwood-gl.dylib: HackiOS's eagl.c + gl_osmesa.c, which
+#                replace the six -[EAGLContext ...] methods CoreAnimation asks
+#                for and hand the drawing to OSMesa.  It has its own
+#                constructor, so loading it into backboardd is enough.
 
 on:
   workflow_dispatch:
@@ -20,6 +26,7 @@ on:
     branches: [main, perseus]
     paths:
       - "tools/mesa/**"
+      - "tools/redwood/**"
       - ".github/workflows/mesa.yml"
 
 jobs:
@@ -35,8 +42,6 @@ jobs:
           ./venv/bin/pip install -q mako pyyaml packaging
           echo "SDK=$(xcrun --sdk iphoneos --show-sdk-path)" >> $GITHUB_ENV
           clang --version | head -2
-          meson --version
-          ninja --version
 
       - name: Fetch Mesa
         env:
@@ -45,10 +50,9 @@ jobs:
           set -eux
           cd "$RUNNER_TEMP"
           curl -sL --fail -o mesa-$VERSION.tar.xz https://archive.mesa3d.org/mesa-$VERSION.tar.xz
-          ls -l mesa-$VERSION.tar.xz
           tar xJf mesa-$VERSION.tar.xz
           for p in "$GITHUB_WORKSPACE"/tools/mesa/*.patch; do
-            echo "applying $(basename $p)"
+            echo "applying $(basename "$p")"
             patch -s --no-backup-if-mismatch -d mesa-$VERSION -p1 < "$p"
           done
 
@@ -97,7 +101,6 @@ jobs:
           llvm-strip -x -o out/libOSMesa.8.dylib build/src/gallium/targets/osmesa/libOSMesa.8.dylib
           install_name_tool -id /redwood/lib/libOSMesa.8.dylib out/libOSMesa.8.dylib
           ls -l out/
-          file out/libOSMesa.8.dylib || true
           nm -gU out/libOSMesa.8.dylib | awk '$3 ~ /^_gl/ { print substr($3, 2) }' > out/exported-gl.txt
           wc -l out/exported-gl.txt
           cp mesa-*/src/mapi/glapi/registry/gl.xml out/gl.xml
@@ -109,3 +112,42 @@ jobs:
             ${{ runner.temp }}/out/libOSMesa.8.dylib
             ${{ runner.temp }}/out/exported-gl.txt
             ${{ runner.temp }}/out/gl.xml
+
+  redwood-gl:
+    needs: build
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: mesa-osmesa
+          path: mesa-out
+
+      - name: Build the EAGL shim
+        run: |
+          set -eux
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          cd mesa-out
+          ls -l
+          python3 "$GITHUB_WORKSPACE/tools/redwood/mkeagl.py" \
+            "$GITHUB_WORKSPACE/tools/redwood/eagl_slots.txt" gl.xml exported-gl.txt \
+            "$GITHUB_WORKSPACE/tools/redwood/eagl.c" > eagl_gen.h
+          wc -l eagl_gen.h
+          clang -dynamiclib -arch arm64 -isysroot "$SDK" -miphoneos-version-min=15.0 \
+            -install_name /redwood/lib/libredwood-gl.dylib \
+            -I. -I"$GITHUB_WORKSPACE/tools/redwood" \
+            -framework CoreFoundation -framework IOKit -framework IOSurface -lobjc \
+            "$GITHUB_WORKSPACE/tools/redwood/eagl.c" \
+            "$GITHUB_WORKSPACE/tools/redwood/gl_osmesa.c" \
+            libOSMesa.8.dylib -o libredwood-gl.dylib 2>&1 | tail -30
+          ls -l libredwood-gl.dylib
+          otool -L libredwood-gl.dylib | head -8
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: redwood-gl
+          path: |
+            ${{ runner.temp }}/mesa-out/libredwood-gl.dylib
+            ${{ runner.temp }}/mesa-out/eagl_gen.h
+            ${{ runner.temp }}/mesa-out/libOSMesa.8.dylib
