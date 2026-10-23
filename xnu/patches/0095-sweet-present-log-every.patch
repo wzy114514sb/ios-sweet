@@ -1,0 +1,37 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index ea924e9..60610a7 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -404,9 +404,18 @@ AppleCLCD::present(const uint8_t *rec)
+ 			 * SWEET: sample the surface content so a black panel can be
+ 			 * attributed either to an empty frame or to the copy path.
+ 			 */
+-			if (((++sweet_fb_present_sum_logs) % 100) == 1) {
++			/*
++			 * The window server presents only a handful of frames while the first
++			 * one is rendered on the CPU (seconds each), so the first presents are
++			 * the interesting ones: log every one of those, and every twentieth
++			 * after them, with a few pixels of the surface to tell "black" from
++			 * "some colour in the wrong place".
++			 */
++			if (++sweet_fb_present_sum_logs <= 30 || (sweet_fb_present_sum_logs % 20) == 0) {
+ 				uint32_t acc = 0, nz = 0;
+ 				const uint8_t *base = (const uint8_t *)(src + s->offset);
++				const uint32_t *row0 = (const uint32_t *)(base + (uint64_t)sy * s->bytesPerRow);
++				const uint32_t *row1 = (const uint32_t *)(base + (uint64_t)(sy + h / 2) * s->bytesPerRow);
+ 				for (int32_t y = 0; y < h; y += 64) {
+ 					const uint32_t *row = (const uint32_t *)(base +
+ 					    (uint64_t)(sy + y) * s->bytesPerRow);
+@@ -418,8 +427,10 @@ AppleCLCD::present(const uint8_t *rec)
+ 						}
+ 					}
+ 				}
+-				IOLog("SWEET FB: present surface %u %dx%d xor 0x%08x nonblack %u\n",
+-				    id, w, h, acc, nz);
++				IOLog("SWEET FB: present %llu surface %u %dx%d bpr %u nonblack %u xor 0x%08x"
++				    " p00 0x%08x pmid 0x%08x pbot 0x%08x\n",
++				    sweet_fb_present_sum_logs, id, w, h, s->bytesPerRow, nz, acc,
++				    row0[0], row0[w / 2], row1[w / 2]);
+ 			}
+ 			for (int32_t y = 0; y < h; y++) {
+ 				memcpy((void *)(fPixels + (uint64_t)(dy + y) * fRowBytes + (uint64_t)dx * 4),
