@@ -1,0 +1,40 @@
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+index 7f90c56..cfcd3fd 100644
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -739,6 +739,11 @@ IOSurfaceRootUserClient::externalMethod(uint32_t selector, IOExternalMethodArgum
+ 	}
+ 	case kSweetSurfaceCreate:
+ 		return create(args);
++	case 6:
++		/* iOS 16.7's IOSurface.framework asks for the surface this way as well
++		 * (before it locks it and writes into the mapping); answering with a
++		 * zeroed structure left it with a NULL base address and it crashed in
++		 * memcpy at 0x30.  Same answer as the lookup below. */
+ 	case kSweetSurfaceLookup: {
+ 		SweetSurface *s = sweet_surface_copy((uint32_t)arg0);
+ 		IOReturn ret = kIOReturnNotFound;
+@@ -773,15 +778,15 @@ IOSurfaceRootUserClient::externalMethod(uint32_t selector, IOExternalMethodArgum
+ 		return kIOReturnSuccess;
+ 	}
+ 	default:
+-		/* Values, notifications, ownership, timestamps...: accept and ignore. */
+-		for (uint32_t i = 0; i < args->scalarOutputCount; i++) {
+-			args->scalarOutput[i] = 0;
+-		}
+-		if (args->structureOutput != NULL) {
+-			bzero(args->structureOutput, args->structureOutputSize);
+-		}
++		/*
++		 * Values, notifications, ownership, timestamps... would be accepted here,
++		 * but a caller that asked for a surface's mapping and got a zeroed
++		 * structure takes the base address for NULL.  Fail instead: the library
++		 * then reports an error, which is recoverable, rather than writing into
++		 * address 0.
++		 */
+ 		sweet_surf_log_once("sel", selector);
+-		return kIOReturnSuccess;
++		return kIOReturnUnsupported;
+ 	}
+ }
+ 
