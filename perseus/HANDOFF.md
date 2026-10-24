@@ -421,3 +421,69 @@ Add `glframes=1 gltrace_lit=1` for a line per frame from the shim.
   but are not exact), because `b3a8` surfaces are attached and read as 4-byte
   pixels; ask Mesa for `GL_RGB10_A2`/`GL_UNSIGNED_INT_2_10_10_10_REV` to do it
   properly.
+
+## A smooth interface, and what the touch controller is waiting for
+
+The hello screen renders, in colour, at a usable speed, and the reason it is fast
+is worth writing down: **CoreAnimation's own software rasteriser**, not Mesa.
+The port had been forcing an OpenGL ES implementation into the window server
+(`sweetinject=.../libredwood-gl.dylib:backboardd`), which put Mesa's `softpipe`
+- an interpreter - in the drawing path, at about a second a frame.  Leave the
+injection out and CoreAnimation falls back to its software rasteriser and the
+interface is smooth at 1170x2532.  The IOSurface work that made this possible is
+earlier in this file: selector 6 (patch 0094) and the `b3a8` surfaces.  Boot
+without `sweetinject=...libredwood-gl...` unless the Mesa path is being debugged.
+
+Two smaller findings from the same day:
+
+* A **userspace watchdog panic** ("no successful checkins from
+  com.apple.SpringBoard (600 seconds)") came from presenting the display as
+  828x1792: this build's BoundingPathData has no complete rendition for
+  `828x1792-414x896-2.00x`, so SpringBoard died in the corner-mask load on every
+  start.  1170x2532 (`1170x2532-390x844-3.00x`) is complete; patch 0101 pins it.
+* The third-party boot image that "was much faster" is this project's own kernel
+  (the same SWEET strings, `is empty, showing surface` from 0096) packed by a UEFI
+  loader into a FAT32 ramdisk, with the quiet command line below and **no GL
+  injection**.  Its speed is the software rasteriser, nothing to do with UEFI.
+
+Quiet command line for a normal boot (their `CMDLINE.TXT` minus what only their
+kernel has):
+
+    debug=0xc serial=3 cpus=8 keepsyms=1 -enable_kprintf_spam -noprogress
+    sweetinject=/redwood/lib/libsweetui.dylib:SpringBoard
+    ufsrw=1 rootrw=1 unentitled_ios_sim_launch=1 sweetfb_noconsole=1 rd=ufsroot0
+
+### Touch: the controller is never spoken to, and now that it is, it is not powered
+
+The bring-up used to stop before touching the hardware, twice:
+
+* the Geni SE self-check wanted protocol 3 and read 2, so every boot said
+  "need ABL-loaded I2C firmware and 32-bit FIFOs; probes skipped" (0099 lets it
+  try any protocol);
+* then the SE's status register (bit 12 set, the state the bootloader leaves)
+  ended it ("SE7 already busy") - 0100 warns and goes on.
+
+With both out of the way the bring-up now runs to "step 7: configured, probing"
+and then dies with `Unhandled implementation specific error` - a bus error.  The
+line before it says why: **`TLMM reset=0 irq=0 vdd=0`**.  The SE's power domain
+is off, so the moment a transfer touches its FIFOs the interconnect faults; that
+is also why the panic comes and goes between boots.
+
+What the bring-up still needs, before any byte is moved:
+
+* the SE's power rail: the QUPv3 wrapper (and its SS/CX vote) is what Android
+  enables through RPMh/RSC - our vote only covers the GCC clock branch;
+* the QUP wrapper reset and the SE's own `force default`, in that order, with the
+  SE powered throughout;
+* then the controller's I2C transfers (the code for those is already there).
+
+The bring-up is behind `sweetouch=1` (patch 0102) so a normal boot stays stable;
+0103 prints which step is reached.
+
+Untested: skipping the bootloader's setup by replacing
+`-[SBLockdownManager _setupActivationState]` and
+`-[SBSetupManager _setSetupRequiredReason:]` (`work/libsweetui.m`, built with
+clang-18 and the theos SDK, injected into SpringBoard with `sweetinject=`) - the
+hello screen still appears, so either the library is not reaching SpringBoard or
+SpringBoard asks something else; its constructor writes to stderr, which launchd
+only forwards to the console if the job's StandardErrorPath says so.
