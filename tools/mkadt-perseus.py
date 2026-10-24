@@ -72,8 +72,17 @@ def d22ap_product(path=D22AP_ADT):
     root, _ = adt.parse(open(path, 'rb').read())
     for child in root.children:
         if dict((k, v) for k, _f, v in child.props).get('name') == b'product\0':
-            return [(k, v) for k, _f, v in child.props
-                    if not _f and k not in ('name', 'AAPL,phandle')]
+            props = [(k, v) for k, _f, v in child.props
+                     if not _f and k not in ('name', 'AAPL,phandle')]
+            # The /product node comes from an iPhone X (d22ap), whose screen is
+            # 375x812 at 3x (1125x2436 pixels).  This port presents a 1170x2532
+            # display (390x844 at 3x, the size whose asset renditions are
+            # complete); CoreAnimation renders at the point size the device
+            # reports, so it drew 1125x2436 into surfaces the 1170x2532 display
+            # never showed.  Say it is an iPhone 12 (iPhone13,2), the device that
+            # has this screen.
+            props = [(k, b'iPhone13,2\0' if k == 'product-name' else v) for k, v in props]
+            return props
     raise SystemExit(f'{path}: no /product node')
 
 
@@ -122,7 +131,7 @@ def build(seed=None, qemu=False, highmem=False, dram_size=None, dram_base=None,
         ('system-firmware-version', cstr('perseus-shim')),
         ('boot-manifest-hash', BOOT_MANIFEST_HASH),
         ('crypto-hash-method', cstr('sha2-384')),
-        ('display-scale', u32(3)),
+        ('display-scale', u32(2)),       # 828x1792 is 414x896 points at 2x
         ('unique-chip-id', struct.pack('<Q', SWEET_ECID)),
         ('chip-id', u32(0x8015)),       # A11, the SoC the iPhone X userland expects
         ('certificate-production-status', u32(0)),

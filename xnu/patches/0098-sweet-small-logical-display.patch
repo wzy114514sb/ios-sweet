@@ -1,0 +1,72 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index e6b0a37..7183f08 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -86,8 +86,14 @@ enum {
+  * complete.
+  * Boot-arg sweetfb_native=1 presents the real panel size instead.
+  */
+-#define SWEET_FB_LOGICAL_W              1170
+-#define SWEET_FB_LOGICAL_H              2532
++/*
++ * 828x1792 (414x896 points at 2x, the iPhone XR): the software rasteriser pays
++ * for every pixel, and this is the smallest real device with the same 19.5:9
++ * shape as the panel (1170x2532 cost 1.9 seconds a frame here).  The panel still
++ * receives 1080x2340; present() scales.
++ */
++#define SWEET_FB_LOGICAL_W              828
++#define SWEET_FB_LOGICAL_H              1792
+ #define SWEET_FB_FORMAT_BGRA            0x42475241
+ 
+ class IOMobileFramebuffer : public IOService {
+@@ -378,10 +384,10 @@ AppleCLCD::present(const uint8_t *rec)
+ 				s = other;
+ 				src = s->kernelAddress();
+ 				bpe = s->bytesPerElement ? s->bytesPerElement : 4;
+-				sx = (int32_t)s->width > (int32_t)fWidth ? ((int32_t)s->width - (int32_t)fWidth) / 2 : 0;
+-				sy = (int32_t)s->height > (int32_t)fHeight ? ((int32_t)s->height - (int32_t)fHeight) / 2 : 0;
+-				dx = (int32_t)fOffX;
+-				dy = (int32_t)fOffY;
++				sx = 0;
++				sy = 0;
++				dx = 0;
++				dy = 0;
+ 				w = (int32_t)fWidth;
+ 				h = (int32_t)fHeight;
+ 			}
+@@ -460,10 +466,31 @@ AppleCLCD::present(const uint8_t *rec)
+ 				    sweet_fb_present_sum_logs, id, w, h, s->bytesPerRow, nz, acc,
+ 				    row0[0], row0[w / 2], row1[w / 2]);
+ 			}
+-			for (int32_t y = 0; y < h; y++) {
+-				memcpy((void *)(fPixels + (uint64_t)(dy + y) * fRowBytes + (uint64_t)dx * 4),
+-				    (const void *)(src + s->offset + (uint64_t)(sy + y) * s->bytesPerRow + (uint64_t)sx * 4),
+-				    (size_t)w * 4);
++			if (sx == 0 && sy == 0 && (int32_t)s->width == w && (int32_t)s->height == h) {
++				for (int32_t y = 0; y < h; y++) {
++					memcpy((void *)(fPixels + (uint64_t)(dy + y) * fRowBytes + (uint64_t)dx * 4),
++					    (const void *)(src + s->offset + (uint64_t)(sy + y) * s->bytesPerRow + (uint64_t)sx * 4),
++					    (size_t)w * 4);
++				}
++			} else {
++				/*
++				 * SWEET: nearest-neighbour scale, for the surfaces CoreAnimation
++				 * draws at a size of its own (and for a logical display smaller
++				 * than the panel).  Bilinear would cost more than the copy.
++				 */
++				int64_t spanY = (int64_t)s->height - sy;
++				int64_t spanX = (int64_t)s->width - sx;
++
++				for (int32_t y = 0; y < h; y++) {
++					int32_t srcY = sy + (int32_t)((int64_t)y * spanY / h);
++					const uint32_t *srow = (const uint32_t *)(src + s->offset +
++					    (uint64_t)srcY * s->bytesPerRow);
++					uint32_t *drow = (uint32_t *)(fPixels + (uint64_t)(dy + y) * fRowBytes) + dx;
++
++					for (int32_t x = 0; x < w; x++) {
++						drow[x] = srow[sx + (int32_t)((int64_t)x * spanX / w)];
++					}
++				}
+ 			}
+ 		}
+ 		s->release();
