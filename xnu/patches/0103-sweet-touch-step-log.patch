@@ -1,0 +1,37 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index dc53837..2adbea5 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -521,19 +521,32 @@ touch_se_init(void)
+ 		printf("SWEET TOUCH: SE7 status %#x, forcing it back to default\n",
+ 		    touch_rd(st.se, SE_STATUS));
+ 	}
++	/*
++	 * SWEET: one line before each step, because touching the wrong register of
++	 * a Geni SE the bootloader has powered down raises a bus error that ends in
++	 * "Unhandled implementation specific error" - and then the console shows
++	 * which step was the last one to get through.
++	 */
++	printf("SWEET TOUCH: step 1: GSI events off\n");
+ 	touch_wr(st.se, 0xe18, 0); /* no GSI events */
++	printf("SWEET TOUCH: step 2: IRQ routing off\n");
+ 	touch_wr(st.se, 0xe1c, 0); /* mask external IRQ routing; poll local status */
+ 	touch_wr(st.se, 0x644, 0);
++	printf("SWEET TOUCH: step 3: interrupts cleared\n");
+ 	touch_wr(st.se, SE_IRQ_CLR, 0xffffffffu);
+ 	touch_wr(st.se, 0x648, 0xffffffffu);
+ 	touch_wr(st.se, SE_DMA, 0);
++	printf("SWEET TOUCH: step 4: force default\n");
+ 	touch_wr(st.se, 0x28, touch_rd(st.se, 0x28) | 0x7fu);
+ 	touch_wr(st.se, 0xe30, touch_rd(st.se, 0xe30) | 0x0fu);
+ 	touch_wr(st.se, 0x24, 0x7f);
+ 	touch_wr(st.se, 0x20, 1);
++	printf("SWEET TOUCH: step 5: clock select\n");
+ 	touch_wr(st.se, SE_CLK_SEL, 0);
+ 	touch_wr(st.se, SE_MCLK, (7u << 4) | 1u);
++	printf("SWEET TOUCH: step 6: SCL timing\n");
+ 	touch_wr(st.se, SE_SCL, (10u << 20) | (11u << 10) | 26u); /* 100 kHz */
++	printf("SWEET TOUCH: step 7: configured, probing\n");
+ 	/* Linux 8-bit I2C packing: MSB on the wire, LSB byte first in FIFO. */
+ 	touch_wr(st.se, 0x254, 0);
+ 	touch_wr(st.se, 0x260, SE_PACK0);
