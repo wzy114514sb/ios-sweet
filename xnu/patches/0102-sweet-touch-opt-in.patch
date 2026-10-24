@@ -1,0 +1,24 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index 6c2605b..dc53837 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -654,6 +654,19 @@ out:
+ void
+ sweet_touch_init(void)
+ {
++	/*
++	 * Reaching into the Geni SE while the bootloader still owns it raises a bus
++	 * error that ends in "Unhandled implementation specific error", so the
++	 * bring-up only runs when asked: boot-arg sweetouch=1.
++	 */
++	{
++		int on = 0;
++
++		if (!PE_parse_boot_argn("sweetouch", &on, sizeof(on)) || on == 0) {
++			printf("SWEET TOUCH: bring-up not requested (sweetouch=1 enables it)\n");
++			return;
++		}
++	}
+ 	int enabled = 1;
+ 	thread_t thread;
+ 	if (st.started) {
