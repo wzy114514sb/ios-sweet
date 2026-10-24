@@ -1,0 +1,22 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index 002a451..6c2605b 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -511,8 +511,15 @@ touch_se_init(void)
+ 		return false;
+ 	}
+ 	if (touch_rd(st.se, SE_STATUS) & 0x1001u) {
+-		printf("SWEET TOUCH: SE7 already busy; probes skipped\n");
+-		return false;
++		/*
++		 * The bootloader leaves the SE with its status register set (bit 12
++		 * here), which used to end the bring-up before a single byte was sent.
++		 * The init below forces the SE back to its default state (0x20 = 1) and
++		 * clears the FIFOs, so go on and let the probes find out whether the
++		 * controller answers; every transfer has a timeout.
++		 */
++		printf("SWEET TOUCH: SE7 status %#x, forcing it back to default\n",
++		    touch_rd(st.se, SE_STATUS));
+ 	}
+ 	touch_wr(st.se, 0xe18, 0); /* no GSI events */
+ 	touch_wr(st.se, 0xe1c, 0); /* mask external IRQ routing; poll local status */
