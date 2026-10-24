@@ -131,7 +131,7 @@ def build(seed=None, qemu=False, highmem=False, dram_size=None, dram_base=None,
         ('system-firmware-version', cstr('perseus-shim')),
         ('boot-manifest-hash', BOOT_MANIFEST_HASH),
         ('crypto-hash-method', cstr('sha2-384')),
-        ('display-scale', u32(2)),       # 828x1792 is 414x896 points at 2x
+        ('display-scale', u32(3)),
         ('unique-chip-id', struct.pack('<Q', SWEET_ECID)),
         ('chip-id', u32(0x8015)),       # A11, the SoC the iPhone X userland expects
         ('certificate-production-status', u32(0)),

@@ -1,0 +1,25 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 7183f08..8524454 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -87,13 +87,14 @@ enum {
+  * Boot-arg sweetfb_native=1 presents the real panel size instead.
+  */
+ /*
+- * 828x1792 (414x896 points at 2x, the iPhone XR): the software rasteriser pays
+- * for every pixel, and this is the smallest real device with the same 19.5:9
+- * shape as the panel (1170x2532 cost 1.9 seconds a frame here).  The panel still
+- * receives 1080x2340; present() scales.
++ * 1170x2532 (390x844 points at 3x) again: 828x1792 (the iPhone XR) is a real
++ * device too, but this build's BoundingPathData has no complete rendition for
++ * "828x1792-414x896-2.00x", so SpringBoard died in the corner-mask load and the
++ * userspace watchdog panicked the kernel after ten minutes of it restarting.
++ * The panel still receives the centred 1080x2340 of it.
+  */
+-#define SWEET_FB_LOGICAL_W              828
+-#define SWEET_FB_LOGICAL_H              1792
++#define SWEET_FB_LOGICAL_W              1170
++#define SWEET_FB_LOGICAL_H              2532
+ #define SWEET_FB_FORMAT_BGRA            0x42475241
+ 
+ class IOMobileFramebuffer : public IOService {
