@@ -1,0 +1,53 @@
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+index dec2a11..8cd2807 100644
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -199,7 +199,7 @@ sweet_surface_has_content(SweetSurface *s)
+ SweetSurface *
+ sweet_surface_any_with_content(uint32_t except)
+ {
+-	SweetSurface *candidates[8];
++	SweetSurface *candidates[24];
+ 	SweetSurface *found = NULL;
+ 	uint32_t n = 0;
+ 
+@@ -207,7 +207,7 @@ sweet_surface_any_with_content(uint32_t except)
+ 		return NULL;
+ 	}
+ 	IOLockLock(sweet_surface_lock);
+-	for (uint32_t i = 1; i < SWEET_SURFACE_MAX_ID && n < 8; i++) {
++	for (uint32_t i = 1; i < SWEET_SURFACE_MAX_ID && n < 24; i++) {
+ 		SweetSurface *s = sweet_surface_table[i];
+ 		if (s == NULL || s->id == except) {
+ 			continue;
+@@ -217,12 +217,26 @@ sweet_surface_any_with_content(uint32_t except)
+ 	}
+ 	IOLockUnlock(sweet_surface_lock);
+ 
++	/*
++	 * The biggest one that has anything in it: CoreAnimation draws the screen
++	 * into a surface of its own and keeps small ones around as well (layer
++	 * contents, an icon, the touch pointer), so the first one with content is
++	 * not the picture.  Sizes are compared, not contents, so this stays cheap.
++	 */
+ 	for (uint32_t i = 0; i < n; i++) {
+-		if (found == NULL && sweet_surface_has_content(candidates[i])) {
+-			found = candidates[i];
+-		} else {
+-			candidates[i]->release();
++		SweetSurface *s = candidates[i];
++
++		if (sweet_surface_has_content(s) &&
++		    (found == NULL || (uint64_t)s->width * s->height > (uint64_t)found->width * found->height)) {
++			SweetSurface *was = found;
++
++			s->retain();
++			found = s;
++			if (was != NULL) {
++				was->release();
++			}
+ 		}
++		candidates[i]->release();
+ 	}
+ 	return found;
+ }
