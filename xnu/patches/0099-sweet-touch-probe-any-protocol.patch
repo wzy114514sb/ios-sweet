@@ -1,0 +1,31 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index 03defe6..002a451 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -492,13 +492,22 @@ touch_se_init(void)
+ {
+ 	uint32_t fw = touch_rd(st.se, SE_FW);
+ 	uint32_t tx = touch_rd(st.se, SE_HW_TX), rx = touch_rd(st.se, SE_HW_RX);
+-	printf("SWEET TOUCH: se7 fw=%#x proto=%u status=%#x tx=%#x rx=%#x ios=%#x\n",
++	printf("SWEET TOUCH: se7 fw=%#x proto=%u status=%#x tx=%#x rx=%#x ios=%#x"
++	    " (probing with protocol %u)\n",
+ 	    fw, (fw >> 8) & 0xffu, touch_rd(st.se, SE_STATUS), tx, rx,
+-	    touch_rd(st.se, 0x908));
+-	if (((fw >> 8) & 0xffu) != 3u || (touch_rd(st.se, 0x64) & 1u) ||
++	    touch_rd(st.se, 0x908), (fw >> 8) & 0xffu);
++	/*
++	 * The protocol field said 2 here, not the 3 this check wanted, and the
++	 * probes were skipped on every boot - so no touch controller was ever
++	 * spoken to.  The FIFO geometry is right (32-bit wide, 16 deep), which is
++	 * what the transfers below need, so try whatever protocol the bootloader
++	 * left behind and report what happens instead of guessing.
++	 */
++	if ((touch_rd(st.se, 0x64) & 1u) ||
+ 	    ((tx >> 24) & 0x3fu) != 32u || ((rx >> 24) & 0x3fu) != 32u ||
+ 	    ((tx >> 16) & 0x3fu) < 2u || ((rx >> 16) & 0x3fu) < 2u) {
+-		printf("SWEET TOUCH: need ABL-loaded I2C firmware and 32-bit FIFOs; probes skipped\n");
++		printf("SWEET TOUCH: FIFO geometry unusable (proto %u); probes skipped\n",
++		    (fw >> 8) & 0xffu);
+ 		return false;
+ 	}
+ 	if (touch_rd(st.se, SE_STATUS) & 0x1001u) {
