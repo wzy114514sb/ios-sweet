@@ -1,0 +1,29 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index 46b6b42..8af5559 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -604,7 +604,23 @@ touch_thread(void *arg, wait_result_t result)
+ 	/* Keep the IC in reset while its rails settle; IRQ stays an input. */
+ 	touch_gpio(9, 0, 3, 3, false, false); /* IRQ input, 8 mA, pull-up */
+ 	touch_gpio(8, 0, 3, 3, true, false);
+-	int power_error = sweet_rpmh_vreg_enable("ldoc11", 3200);
++	/*
++	 * SWEET: the RPMh vote is what panicked ("Unhandled implementation specific
++	 * error", with this line as the last thing on the console): RPMh is the RSC
++	 * coprocessor and takes its votes as TCS commands, not as plain register
++	 * writes.  Until that protocol is implemented, skip the vote unless asked -
++	 * the bootloader has almost certainly left the rail on, since the panel it
++	 * drives is the one fastboot draws on.
++	 */
++	int want_vote = 0;
++	int power_error = 0;
++
++	if (PE_parse_boot_argn("sweetouch_vote", &want_vote, sizeof(want_vote)) && want_vote != 0) {
++		printf("SWEET TOUCH: voting L11C through RPMh (asked)\n");
++		power_error = sweet_rpmh_vreg_enable("ldoc11", 3200);
++	} else {
++		printf("SWEET TOUCH: RPMh vote skipped (sweetouch_vote=1 asks for it)\n");
++	}
+ 	printf("SWEET TOUCH: milestone A: RPMh vote returned %d\n", power_error);
+ 	if (power_error) {
+ 		printf("SWEET TOUCH: L11C RPMh enable failed %d; probes skipped\n", power_error);
