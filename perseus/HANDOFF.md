@@ -366,3 +366,58 @@ Boot args for this image:
 If the screen stays black with no `redwood-gl:` lines at all, the injection did
 not happen: check that launchd took the plist (the boot arg) and that the
 library's install name matches its path.
+
+## The screen shows iOS (fifth session)
+
+The Apple "hello" screen of the setup assistant, drawn by the real iOS 16.7.16
+userland, is on the perseus panel.  What made it appear, in the order the pieces
+were found:
+
+1. **A renderer.** CoreAnimation had none: no Metal (no GPU driver), and Apple's
+   OpenGL ES cannot draw either.  Mesa 25.0.7 built with the `softpipe` gallium
+   driver (plain C, no LLVM, no GPU) as `/redwood/lib/libOSMesa.8.dylib`, and
+   HackiOS's `eagl.c` + `gl_osmesa.c` over it as `/redwood/lib/libredwood-gl.dylib`,
+   give CoreAnimation an OpenGL ES 3 context it can use.
+2. **A way into the window server.** `launchd` refuses to pass `DYLD_*` from a
+   job description, and dyld asks AMFI (`__mac_syscall` request 0x5a) whether
+   inserted libraries are allowed.  Patch 0092 has the kernel add
+   `DYLD_INSERT_LIBRARIES` itself (boot-arg `sweetinject=LIBRARY:NAME:NAME`), and
+   0091 answers 0x5a with "all allowed"; **the policy must be registered under
+   the name "AMFI"** (patch 0093) or the question is never delivered.
+3. **Surfaces.** IOSurface selector 6 must answer like a lookup (patch 0094), and
+   `attachImage:` must accept CoreAnimation's `b3a8` (BGR10A2) surfaces, not only
+   `BGRA` - `tools/redwood/eagl.c` used to refuse them, which is why nothing was
+   ever read back.
+4. **Showing it.** CoreAnimation renders into a surface of its own (1125x2436,
+   the size UIKit believes the screen to be) and hands the display a different,
+   empty one (1170x2532); on a device the display's scaler carries the pixels
+   across.  Patches 0096/0097 make `present()` fall back to the *largest* surface
+   that has content, which is the picture.
+
+Boot arguments that produce this (kernel built with the patch series, root image
+built with `tools/redwood-image.sh`):
+
+    debug=0x14e serial=3 cpus=8 keepsyms=1 -v -enable_kprintf_spam -noprogress
+    sweetinject=/redwood/lib/libredwood-gl.dylib:backboardd
+    ufsrw=1 rootrw=1 unentitled_ios_sim_launch=1 sweetfb_noconsole=1
+    sweetsample=SpringBoard,backboardd,com.apple.datami rd=ufsroot0
+
+Add `glframes=1 gltrace_lit=1` for a line per frame from the shim.
+
+### It is not usable yet
+
+* **Every frame takes about a second.** softpipe rasterises 1170x2532 (three
+  million pixels) on the CPU; CoreAnimation composites 2-9 draws a frame, and
+  backboardd logs 0.9-1.0 s per frame (13 s when a shader is compiled).
+  Candidates, in order of expected value: present a smaller logical display
+  (half the width and height is four times fewer pixels), set "reduce
+  transparency" so CoreAnimation stops drawing vibrant blur, `vblur=0`, and
+  llvmpipe instead of softpipe (needs LLVM for arm64-iOS, a much bigger build).
+* **The panel does not respond to touch and the power button takes a minute.**
+  The window server is simply not keeping up: events arrive but nothing on the
+  userland side runs often enough to consume them.  Fixing the frame time is the
+  prerequisite for both.
+* The picture is also ten-bit BGR rendered as eight-bit BGR (colours look close
+  but are not exact), because `b3a8` surfaces are attached and read as 4-byte
+  pixels; ask Mesa for `GL_RGB10_A2`/`GL_UNSIGNED_INT_2_10_10_10_REV` to do it
+  properly.
