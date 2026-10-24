@@ -1,0 +1,29 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index 2adbea5..46b6b42 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -605,19 +605,24 @@ touch_thread(void *arg, wait_result_t result)
+ 	touch_gpio(9, 0, 3, 3, false, false); /* IRQ input, 8 mA, pull-up */
+ 	touch_gpio(8, 0, 3, 3, true, false);
+ 	int power_error = sweet_rpmh_vreg_enable("ldoc11", 3200);
++	printf("SWEET TOUCH: milestone A: RPMh vote returned %d\n", power_error);
+ 	if (power_error) {
+ 		printf("SWEET TOUCH: L11C RPMh enable failed %d; probes skipped\n", power_error);
+ 		goto out;
+ 	}
+ 	touch_gpio(90, 0, 0, 0, true, true); /* board digital power enable */
++	printf("SWEET TOUCH: milestone B: power enable gpio set\n");
+ 	touch_wait(10); /* conservative rail settling; not a DT timing value */
+ 	touch_gpio(6, 1, 0, 0, false, false); /* qup11 SDA/SCL, 2 mA */
+ 	touch_gpio(7, 1, 0, 0, false, false);
++	printf("SWEET TOUCH: milestone C: i2c pins configured\n");
+ 	/* Vendor GT9896 dev_confirm: reset low 2 ms, then high. */
+ 	touch_gpio(8, 0, 3, 3, true, false);
+ 	touch_wait(2);
+ 	touch_gpio(8, 0, 3, 3, true, true);
++	printf("SWEET TOUCH: milestone D: reset released, waiting\n");
+ 	touch_wait(300); /* exceeds vendor 5 ms test + 95 ms post-test wait */
++	printf("SWEET TOUCH: milestone E: first transfer next\n");
+ 	uint8_t gid[32], legacy[32], fid1 = 0, fid2 = 0;
+ 	st.probing = true;
+ 	int ge = touch_probe_info(GOODIX_PID_REG, gid);
