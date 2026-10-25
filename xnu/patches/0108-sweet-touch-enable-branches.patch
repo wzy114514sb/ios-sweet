@@ -1,0 +1,27 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index 8af5559..d78e95c 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -162,9 +162,22 @@ touch_clocks(void)
+ 	}
+ 	const uint32_t branches[] = {0x18004, 0x18008, 0x1800c, 0x18010, 0x18144};
+ 	for (unsigned i = 0; i < sizeof(branches) / sizeof(branches[0]); ++i) {
++		/*
++		 * SWEET: these are the QUPV3 wrapper's branch clocks (the AHB clock
++		 * among them), and the code only ever *read* them: a branch that is
++		 * gated off - bit 0 clear - leaves the SE without a bus clock, and the
++		 * first register access stalls the interconnect until an asynchronous
++		 * SError panics the kernel ("Unhandled implementation specific
++		 * error").  Take software control (bits 1-4 clear) and enable it.
++		 */
++		uint32_t v = touch_rd(st.gcc, branches[i]);
++
++		touch_wr(st.gcc, branches[i], (v & ~0x1eu) | 1u);
+ 		if (!touch_wait_clear(st.gcc, branches[i], 1u << 31)) {
+ 			printf("SWEET TOUCH: GCC branch %#x halted (%#x)\n", branches[i],
+ 			    touch_rd(st.gcc, branches[i]));
++			printf("SWEET TOUCH: branch %#x read %#x after enabling\n",
++			    branches[i], touch_rd(st.gcc, branches[i]));
+ 			return false;
+ 		}
+ 	}
