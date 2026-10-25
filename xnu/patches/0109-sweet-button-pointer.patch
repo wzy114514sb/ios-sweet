@@ -89,7 +89,7 @@ index a148608..da3d684 100644
  sweet_keys_init(void)
  {
 diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
-index 8524454..1d515fd 100644
+index 8524454..a693c73 100644
 --- a/iokit/Kernel/arm/SweetFramebuffer.cpp
 +++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
 @@ -467,6 +467,33 @@ AppleCLCD::present(const uint8_t *rec)
@@ -102,7 +102,7 @@ index 8524454..1d515fd 100644
 +			 * copied - so it is visible without any compositor help.
 +			 */
 +			{
-+				extern void sweet_pointer_position(int *x, int *y);
++				extern "C" void sweet_pointer_position(int *x, int *y);
 +				int px = 0, py = 0;
 +
 +				sweet_pointer_position(&px, &py);
