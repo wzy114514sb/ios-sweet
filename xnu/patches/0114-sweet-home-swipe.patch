@@ -1,0 +1,43 @@
+diff --git a/bsd/dev/sweet_keys.c b/bsd/dev/sweet_keys.c
+index cfbdef5..ce68563 100644
+--- a/bsd/dev/sweet_keys.c
++++ b/bsd/dev/sweet_keys.c
+@@ -202,25 +202,27 @@ sweet_pointer_position(int *x, int *y)
+ 	}
+ }
+ 
+-/* A swipe from the cursor straight up - the gesture iOS wants for "open". */
++/*
++ * The home gesture, exactly as iOS expects to recognise it: a finger placed near
++ * the bottom edge, in the middle, and dragged upward.  Starting anywhere else -
++ * where the cursor happens to be - is not recognised, which is why the first
++ * version of this did nothing on the "Swipe up to open" screen.
++ */
+ static void
+ sweet_pointer_swipe_up(void)
+ {
+-	int from = sweet_pointer_y;
+-	int to = from - SWEET_POINTER_SWIPE;
++	int from = SWEET_POINTER_MAX_Y - 40;
++	int to = from - 700;
++	int x = SWEET_POINTER_MAX_X / 2;
+ 
+-	if (to < 0) {
+-		to = 0;
+-	}
+-	sweet_hid_touch(0, 1, sweet_pointer_x, from);
++	sweet_hid_touch(0, 1, x, from);
+ 	delay(SWEET_POINTER_TAP_US / 2);
+ 	for (int i = 1; i <= SWEET_POINTER_SWIPE_STEPS; i++) {
+-		sweet_hid_touch(0, 1, sweet_pointer_x, from + (to - from) * i / SWEET_POINTER_SWIPE_STEPS);
++		sweet_hid_touch(0, 1, x, from + (to - from) * i / SWEET_POINTER_SWIPE_STEPS);
+ 		delay(SWEET_POINTER_TAP_US / 4);
+ 	}
+-	sweet_hid_touch(0, 0, sweet_pointer_x, to);
+-	sweet_pointer_y = to;
+-	printf("SWEET POINTER: swipe up %d -> %d\n", from, to);
++	sweet_hid_touch(0, 0, x, to);
++	printf("SWEET POINTER: home swipe %d -> %d at x %d\n", from, to, x);
+ }
+ 
+ /*
