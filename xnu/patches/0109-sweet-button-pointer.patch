@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/sweet_keys.c b/bsd/dev/sweet_keys.c
-index a148608..da3d684 100644
+index a148608..e054db6 100644
 --- a/bsd/dev/sweet_keys.c
 +++ b/bsd/dev/sweet_keys.c
 @@ -15,6 +15,9 @@
@@ -20,7 +20,7 @@ index a148608..da3d684 100644
  				sweet_hid_key(k, state[k]);
  			}
  		}
-@@ -122,6 +126,67 @@ keys_thread(void *arg, wait_result_t result)
+@@ -122,6 +126,65 @@ keys_thread(void *arg, wait_result_t result)
  	}
  }
  
@@ -29,10 +29,8 @@ index a148608..da3d684 100644
 + * not answer yet.  Volume up moves it right (wrapping to the left edge), volume
 + * down moves it down (wrapping to the top), and a press of the power button taps
 + * where it is: the same sweet_hid_touch() path a real touch report takes, so what
-+ * iOS sees is an ordinary finger.
-+ *
-+ * The cursor lives in panel pixels (1080x2340), the space the touch driver's
-+ * reports use; the framebuffer draws it in that space too.
++ * iOS sees is an ordinary finger.  The cursor lives in panel pixels (1080x2340),
++ * the space the touch driver's reports use, and the framebuffer draws it there.
 + */
 +#define SWEET_POINTER_MAX_X     1079
 +#define SWEET_POINTER_MAX_Y     2399
@@ -89,37 +87,38 @@ index a148608..da3d684 100644
  sweet_keys_init(void)
  {
 diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
-index 8524454..a693c73 100644
+index 8524454..1fc0813 100644
 --- a/iokit/Kernel/arm/SweetFramebuffer.cpp
 +++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
-@@ -467,6 +467,33 @@ AppleCLCD::present(const uint8_t *rec)
+@@ -105,6 +105,9 @@ OSDefineMetaClassAndStructors(IOMobileFramebuffer, IOService);
+ 
+ class IOMobileFramebufferUserClient;
+ 
++/* bsd/dev/sweet_keys.c: where the button-moved pointer is, in panel pixels. */
++extern "C" void sweet_pointer_position(int *x, int *y);
++
+ class AppleCLCD : public IOMobileFramebuffer {
+ 	OSDeclareDefaultStructors(AppleCLCD);
+ 
+@@ -467,6 +470,24 @@ AppleCLCD::present(const uint8_t *rec)
  				    sweet_fb_present_sum_logs, id, w, h, s->bytesPerRow, nz, acc,
  				    row0[0], row0[w / 2], row1[w / 2]);
  			}
 +			/*
-+			 * SWEET: the button-moved pointer (bsd/dev/sweet_keys.c): a cross in
-+			 * white with a black outline, in panel pixels, over whatever was
-+			 * copied - so it is visible without any compositor help.
++			 * SWEET: the button-moved pointer: a white cross over whatever was
++			 * copied, in panel pixels, so it is visible without a compositor.
 +			 */
 +			{
-+				extern "C" void sweet_pointer_position(int *x, int *y);
 +				int px = 0, py = 0;
 +
 +				sweet_pointer_position(&px, &py);
-+				if (px > 4 && py > 4 && px < (int)fWidth - 4 && py < (int)fHeight - 4) {
++				if (px > 16 && py > 16 && px < (int)fWidth - 16 && py < (int)fHeight - 16) {
 +					for (int d = -14; d <= 14; d++) {
-+						for (int o = -1; o <= 1; o++) {
-+							int xx = px + d, yy = py + o;
-+							uint32_t *row;
++						uint32_t *row = (uint32_t *)(fPixels + (uint64_t)py * fRowBytes);
 +
-+							if (d > -3 && d < 3 && o != 0) {
-+								continue;
-+							}
-+							row = (uint32_t *)(fPixels + (uint64_t)yy * fRowBytes);
-+							row[xx] = 0xffffffffu;
-+							row = (uint32_t *)(fPixels + (uint64_t)(py + d) * fRowBytes);
-+							row[px + o] = 0xffffffffu;
-+						}
++						row[px + d] = 0xffffffffu;
++						row = (uint32_t *)(fPixels + (uint64_t)(py + d) * fRowBytes);
++						row[px] = 0xffffffffu;
 +					}
 +				}
 +			}
