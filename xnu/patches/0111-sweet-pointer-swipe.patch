@@ -1,0 +1,130 @@
+diff --git a/bsd/dev/sweet_keys.c b/bsd/dev/sweet_keys.c
+index 59f7a22..3e15609 100644
+--- a/bsd/dev/sweet_keys.c
++++ b/bsd/dev/sweet_keys.c
+@@ -7,6 +7,7 @@
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ #include <sys/param.h>
+ #include <sys/systm.h>
++#include <mach/mach_time.h>
+ #include <kern/clock.h>
+ #include <kern/thread.h>
+ #include <kern/sched_prim.h>
+@@ -138,6 +139,9 @@ keys_thread(void *arg, wait_result_t result)
+ #define SWEET_POINTER_MAX_Y     2399
+ #define SWEET_POINTER_STEP      48
+ #define SWEET_POINTER_TAP_US    40000
++#define SWEET_POINTER_HOLD_US   700000      /* held longer than this: a gesture */
++#define SWEET_POINTER_SWIPE     420         /* pixels a swipe travels */
++#define SWEET_POINTER_SWIPE_STEPS 5
+ 
+ static int sweet_pointer_x = SWEET_POINTER_MAX_X / 2;
+ static int sweet_pointer_y = SWEET_POINTER_MAX_Y / 2;
+@@ -154,29 +158,85 @@ sweet_pointer_position(int *x, int *y)
+ 	}
+ }
+ 
+-/* A button changed state; act on the press, ignore the release. */
++/* Microseconds, from the platform clock (the timebase is not 1:1 on all). */
++static uint64_t
++sweet_pointer_now_us(void)
++{
++	static mach_timebase_info_data_t timebase;
++
++	if (timebase.denom == 0) {
++		mach_timebase_info(&timebase);
++	}
++	if (timebase.denom == 0) {
++		return 0;
++	}
++	return mach_absolute_time() * timebase.numer / timebase.denom;
++}
++
++/* A swipe from the cursor straight up - the gesture iOS wants for "open". */
++static void
++sweet_pointer_swipe_up(void)
++{
++	int from = sweet_pointer_y;
++	int to = from - SWEET_POINTER_SWIPE;
++
++	if (to < 0) {
++		to = 0;
++	}
++	sweet_hid_touch(0, 1, sweet_pointer_x, from);
++	delay(SWEET_POINTER_TAP_US / 2);
++	for (int i = 1; i <= SWEET_POINTER_SWIPE_STEPS; i++) {
++		sweet_hid_touch(0, 1, sweet_pointer_x, from + (to - from) * i / SWEET_POINTER_SWIPE_STEPS);
++		delay(SWEET_POINTER_TAP_US / 4);
++	}
++	sweet_hid_touch(0, 0, sweet_pointer_x, to);
++	sweet_pointer_y = to;
++	printf("SWEET POINTER: swipe up %d -> %d\n", from, to);
++}
++
++static uint64_t sweet_pointer_pressed_at;
++
++/*
++ * A button changed state.  The power key acts on its release: a short press taps
++ * where the cursor is, a hold swipes up from there (which is how the hello screen
++ * is dismissed and how iOS goes home).
++ */
+ void
+ sweet_pointer_key(int key, int down)
+ {
++	if (key == 0) {
++		if (down) {
++			sweet_pointer_pressed_at = sweet_pointer_now_us();
++			return;
++		}
++		if (sweet_pointer_now_us() - sweet_pointer_pressed_at >= SWEET_POINTER_HOLD_US) {
++			sweet_pointer_swipe_up();
++		} else {
++			sweet_hid_touch(0, 1, sweet_pointer_x, sweet_pointer_y);
++			delay(SWEET_POINTER_TAP_US);
++			sweet_hid_touch(0, 0, sweet_pointer_x, sweet_pointer_y);
++			printf("SWEET POINTER: tap at %d,%d\n", sweet_pointer_x, sweet_pointer_y);
++		}
++		return;
++	}
+ 	if (!down) {
+ 		return;
+ 	}
+-	switch (key) {
+ 	/*
+-	 * Only one of the two volume keys reaches this driver on the phone so far
+-	 * (the one on the PMIC's PON block; the other reads 0 through the GPIO
+-	 * expander), so the key that works walks the cursor the way a text cursor
+-	 * does - right, then down a row when it runs off the edge - and one button
+-	 * plus the power key can still reach the whole screen.  If the second key
+-	 * starts working it goes back up a row.
++	 * Only one of the two volume keys reaches this driver so far (the one on the
++	 * PMIC's PON block; the other reads 0 through the GPIO expander), so the key
++	 * that works walks the cursor like a text cursor - right, then down a row
++	 * when it runs off the edge - and one button plus the power key reaches
++	 * everything.  The other, if it starts reporting, goes up a row.
+ 	 */
+-	case 1:                         /* the key on GPIO: a row up, wrapping */
++	switch (key) {
++	case 1:
+ 		sweet_pointer_y -= SWEET_POINTER_STEP;
+ 		if (sweet_pointer_y < 0) {
+ 			sweet_pointer_y = SWEET_POINTER_MAX_Y;
+ 		}
+ 		break;
+-	case 2:                         /* the key on PON: right, then down a row */
++	case 2:
+ 		sweet_pointer_x += SWEET_POINTER_STEP;
+ 		if (sweet_pointer_x > SWEET_POINTER_MAX_X) {
+ 			sweet_pointer_x = 0;
+@@ -186,11 +246,6 @@ sweet_pointer_key(int key, int down)
+ 			}
+ 		}
+ 		break;
+-	case 0:                         /* power: a tap here */
+-		sweet_hid_touch(0, 1, sweet_pointer_x, sweet_pointer_y);
+-		delay(SWEET_POINTER_TAP_US);
+-		sweet_hid_touch(0, 0, sweet_pointer_x, sweet_pointer_y);
+-		break;
+ 	default:
+ 		break;
+ 	}
