@@ -1,0 +1,40 @@
+diff --git a/bsd/dev/sweet_keys.c b/bsd/dev/sweet_keys.c
+index e054db6..59f7a22 100644
+--- a/bsd/dev/sweet_keys.c
++++ b/bsd/dev/sweet_keys.c
+@@ -162,16 +162,28 @@ sweet_pointer_key(int key, int down)
+ 		return;
+ 	}
+ 	switch (key) {
+-	case 1:                         /* volume up: right, wrapping */
++	/*
++	 * Only one of the two volume keys reaches this driver on the phone so far
++	 * (the one on the PMIC's PON block; the other reads 0 through the GPIO
++	 * expander), so the key that works walks the cursor the way a text cursor
++	 * does - right, then down a row when it runs off the edge - and one button
++	 * plus the power key can still reach the whole screen.  If the second key
++	 * starts working it goes back up a row.
++	 */
++	case 1:                         /* the key on GPIO: a row up, wrapping */
++		sweet_pointer_y -= SWEET_POINTER_STEP;
++		if (sweet_pointer_y < 0) {
++			sweet_pointer_y = SWEET_POINTER_MAX_Y;
++		}
++		break;
++	case 2:                         /* the key on PON: right, then down a row */
+ 		sweet_pointer_x += SWEET_POINTER_STEP;
+ 		if (sweet_pointer_x > SWEET_POINTER_MAX_X) {
+ 			sweet_pointer_x = 0;
+-		}
+-		break;
+-	case 2:                         /* volume down: down, wrapping */
+-		sweet_pointer_y += SWEET_POINTER_STEP;
+-		if (sweet_pointer_y > SWEET_POINTER_MAX_Y) {
+-			sweet_pointer_y = 0;
++			sweet_pointer_y += SWEET_POINTER_STEP;
++			if (sweet_pointer_y > SWEET_POINTER_MAX_Y) {
++				sweet_pointer_y = 0;
++			}
+ 		}
+ 		break;
+ 	case 0:                         /* power: a tap here */
